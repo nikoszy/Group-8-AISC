@@ -2,3 +2,7 @@ opencv-python>=4.5.0
 moviepy>=1.0.0
 numpy>=1.19.0
 Pillow>=8.0.0
+kagglehub>=1.0.0
+matplotlib>=3.5.0
+torch>=2.0.0
+torchvision>=0.15.0
