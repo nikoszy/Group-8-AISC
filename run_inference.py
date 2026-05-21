@@ -11,7 +11,8 @@ Example::
         --output-dir data/inference_results
 
 Produces one CSV per video in ``--output-dir`` with columns:
-    video_id, frame_id, timestamp, eye_state, blink_count, blinks_per_minute
+    video_id, frame_id, timestamp, eye_state, blink_count, blinks_per_minute,
+    is_fake
 """
 
 from __future__ import annotations
@@ -26,6 +27,22 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.mrl.inference import load_model, process_video  # noqa: E402
+
+
+def derive_is_fake(video_path: Path) -> int:
+    """Infer ground-truth label from the video path.
+
+    Returns:
+        1  if any path component contains "manipulated"
+        0  if any path component contains "original"
+       -1  otherwise (unknown)
+    """
+    parts = video_path.resolve().as_posix().lower()
+    if "manipulated" in parts:
+        return 1
+    if "original" in parts:
+        return 0
+    return -1
 
 
 def parse_args() -> argparse.Namespace:
@@ -126,6 +143,8 @@ def main() -> None:
         if df.empty:
             logging.warning("  Skipped %s (no frames)", vdir.name)
             continue
+
+        df["is_fake"] = derive_is_fake(vdir)
 
         csv_path = output_dir / f"{vdir.name}.csv"
         df.to_csv(csv_path, index=False)
