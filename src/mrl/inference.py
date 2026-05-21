@@ -55,9 +55,13 @@ def load_model(
         device: target device (auto-detected when *None*)
 
     Returns:
-        (model, img_size, class_to_label) where *class_to_label* maps
-        integer indices to human-readable labels such as
-        ``{0: "awake", 1: "sleepy"}``.
+        (model, img_size, idx_to_label) where *idx_to_label* maps
+        integer model-output indices to human-readable labels, e.g.
+        ``{0: "sleepy", 1: "awake"}``.
+
+    The Kaggle checkpoint stores ``class_to_label`` as **name → index**
+    (``{"awake": 1, "sleepy": 0}``).  This function inverts it to
+    **index → name** for convenient use during inference.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -69,18 +73,20 @@ def load_model(
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     img_size: int = ckpt["img_size"]
-    class_to_label: Dict[int, str] = ckpt["class_to_label"]
-    num_classes = len(class_to_label)
 
-    model = build_model(num_classes=num_classes, in_channels=1)
+    # Checkpoint stores name→index; invert to index→name for inference
+    name_to_idx: Dict[str, int] = ckpt["class_to_label"]
+    idx_to_label: Dict[int, str] = {v: k for k, v in name_to_idx.items()}
+
+    model = build_model()
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
 
     logger.info(
         "Loaded checkpoint %s  (img_size=%d, classes=%s, device=%s)",
-        checkpoint_path.name, img_size, class_to_label, device,
+        checkpoint_path.name, img_size, idx_to_label, device,
     )
-    return model, img_size, class_to_label
+    return model, img_size, idx_to_label
 
 
 # =========================================================================
