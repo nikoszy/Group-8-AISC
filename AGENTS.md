@@ -153,3 +153,32 @@ pip install -r requirements.txt
 | Module 2 — JPEG artifact | Complete (`artifact_module.py`) |
 | Module 3 — FFT + texture ensemble | Complete (`ensemble.py`) |
 | Module 3 — video-level split | Complete (GroupShuffleSplit on video_id) |
+
+---
+
+## Cursor Cloud specific instructions
+
+### Environment
+
+- **Python 3.12** is available system-wide at `/usr/bin/python3` (compatible with all code despite AGENTS.md mentioning 3.13).
+- Dependencies install via `pip install -r requirements.txt` (no virtualenv needed in Cloud Agent VMs).
+- **No linter or test framework** is configured — there are no unit tests, no `pytest`, no `flake8`/`ruff` config. Lint/test steps are not applicable.
+- `cnn_detector.py` requires `torch` + `torchvision` which are **not** in `requirements.txt`. Install separately if needed: `pip install torch torchvision`.
+
+### Dataset
+
+- The FaceForensics++ C23 dataset (`data/FaceForensics++_C23/`) is **not included** in the repo and is too large to download in Cloud Agent VMs. The main pipeline (`inspect_dataset.py` → `ensemble.py`) requires this dataset.
+- To test the pipeline without the dataset, create synthetic face crops in `data/real/frames/` and `data/fake/frames/` plus a `data/manifest.csv` (see README run order). Then run `python ensemble.py` directly (skip `inspect_dataset.py`).
+- If `data/module3_features.csv` already exists, `ensemble.py` loads cached features and skips re-extraction.
+
+### Running the pipeline
+
+- `python inspect_dataset.py` — requires FF++ C23 videos on disk; will fail without them.
+- `python ensemble.py` — requires `data/manifest.csv` + face crop images; produces ROC/PR plots in `data/plots/`.
+- `python artifact_module.py` — self-test that scores `data/real/frames/` and `data/fake/frames/`.
+- `python main.py` — standalone Module 1 demo; requires Kaggle credentials and a GUI (`cv2.imshow`), not usable headless.
+
+### Gotchas
+
+- All matplotlib-based scripts use `matplotlib.use("Agg")` so they run headless — no display needed for `ensemble.py` or `artifact_module.py`.
+- `main.py` calls `cv2.imshow` which **requires a display** — skip it in headless environments.
