@@ -60,6 +60,9 @@ Group-8-AISC/
 │   │   └── csv/               FF++ metadata CSVs
 │   ├── real/frames/           Extracted real face crops (224x224 JPEGs)
 │   ├── fake/frames/           Extracted fake face crops (224x224 JPEGs)
+│   ├── processed/frames/      Sequential per-video face crops @ 15 FPS
+│   │   ├── real/<video_id>/   e.g. real_000/frame_00000.jpg …
+│   │   └── fake/<video_id>/   e.g. fake_042/frame_00000.jpg …
 │   ├── manifest.csv           Image list: file_path, label, video_id, source
 │   ├── module3_features.csv   Per-image features: ear, artifact, fft, laplacian
 │   ├── plots/                 roc_curve.png, precision_recall.png, cnn_roc.png
@@ -85,6 +88,7 @@ MIN_BRIGHTNESS   = 40    # reject frames darker than this
 MIN_FACE_FRAC    = 0.04  # reject if face < 4% of frame area
 REAL_SRC = "data/FaceForensics++_C23/original"
 FAKE_SRC = "data/FaceForensics++_C23/Deepfakes"
+SEQ_FPS  = 15            # sequential extraction rate (Module 1 blink detection)
 ```
 
 To switch manipulation type, change `FAKE_SRC` to one of:
@@ -149,7 +153,7 @@ pip install -r requirements.txt
 
 | Module | Status |
 |---|---|
-| Module 1 — EAR blink detection | Preprocessing helpers done; scoring stub in ensemble |
+| Module 1 — EAR blink detection | Preprocessing helpers done; scoring stub in ensemble; sequential frame extraction at 15 FPS into `data/processed/frames/` |
 | Module 2 — JPEG artifact | Complete (`artifact_module.py`) |
 | Module 3 — FFT + texture ensemble | Complete (`ensemble.py`) |
 | Module 3 — video-level split | Complete (GroupShuffleSplit on video_id) |
