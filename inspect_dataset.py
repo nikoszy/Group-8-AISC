@@ -32,6 +32,11 @@ REAL_DIR      = os.path.join("data", "real", "frames")
 FAKE_DIR      = os.path.join("data", "fake", "frames")
 MANIFEST_PATH = os.path.join("data", "manifest.csv")
 
+# Sequential per-video output (for Module 1 blink detection)
+SEQ_REAL_DIR  = os.path.join("data", "processed", "frames", "real")
+SEQ_FAKE_DIR  = os.path.join("data", "processed", "frames", "fake")
+EXTRACT_FPS   = 15  # target sampling rate for sequential extraction
+
 TARGET_SIZE      = 224   # face-crop output size (pixels)
 TARGET_PER_CLASS = 500   # frames to save per class
 FRAMES_PER_VIDEO = 5     # frames sampled from each video
@@ -111,6 +116,80 @@ def extract_faces_from_video(video_path, n_frames, target_size):
 
     cap.release()
     return results
+
+
+def extract_sequential_from_video(video_path, out_dir, target_fps, target_size):
+    """
+    Extract face crops at *target_fps* for the full video duration and save
+    them sequentially into *out_dir*.  Frames where the face detector fails
+    or brightness is too low are skipped (no placeholder written).
+
+    Returns the number of frames successfully saved.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return 0
+
+    native_fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames <= 0:
+        cap.release()
+        return 0
+
+    # Compute which native frame indices to grab so that we effectively
+    # sample at *target_fps*.  E.g. for a 30-fps video with target 15 fps
+    # we take every 2nd frame.
+    step = max(1, round(native_fps / target_fps))
+    indices = range(0, total_frames, step)
+
+    os.makedirs(out_dir, exist_ok=True)
+    saved = 0
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            continue
+
+        if float(np.mean(frame)) < MIN_BRIGHTNESS:
+            continue
+
+        crop = detect_face_crop(frame, target_size)
+        if crop is None:
+            continue
+
+        filename = f"frame_{str(saved).zfill(5)}.jpg"
+        if cv2.imwrite(os.path.join(out_dir, filename), crop):
+            saved += 1
+
+    cap.release()
+    return saved
+
+
+def extract_class_sequential(src_dir, videos, base_out_dir, prefix, target_fps):
+    """
+    For every video in *videos*, extract sequential face crops at
+    *target_fps* into base_out_dir/<video_id>/.
+
+    Returns total frames saved across all videos.
+    """
+    total_saved = 0
+    for i, vid_name in enumerate(videos):
+        vid_id   = os.path.splitext(vid_name)[0]
+        vid_path = os.path.join(src_dir, vid_name)
+        vid_out  = os.path.join(base_out_dir, f"{prefix}_{vid_id}")
+
+        n = extract_sequential_from_video(
+            vid_path, vid_out, target_fps, TARGET_SIZE
+        )
+        total_saved += n
+
+        if (i + 1) % 20 == 0 or i == 0:
+            print(f"  [{prefix}] video {i+1}/{len(videos)}  "
+                  f"({vid_id}: {n} frames)  total={total_saved}")
+
+    print(f"  Extracted {total_saved} sequential {prefix} frames "
+          f"from {len(videos)} videos into {base_out_dir}")
+    return total_saved
 
 
 def count_jpgs(folder):
@@ -234,6 +313,29 @@ print(f"  Total fake on disk: {count_jpgs(FAKE_DIR)}")
 print()
 
 # ---------------------------------------------------------------------------
+# Step 4b: Sequential per-video extraction at 15 FPS (Module 1 blink detection)
+# ---------------------------------------------------------------------------
+
+print("-" * 65)
+print(f"SEQUENTIAL EXTRACTION  ({EXTRACT_FPS} FPS, full duration)")
+print(f"  Output: {SEQ_REAL_DIR}/<video_id>/  |  {SEQ_FAKE_DIR}/<video_id>/")
+print("-" * 65)
+
+os.makedirs(SEQ_REAL_DIR, exist_ok=True)
+os.makedirs(SEQ_FAKE_DIR, exist_ok=True)
+
+seq_real_total = extract_class_sequential(
+    REAL_SRC, real_videos, SEQ_REAL_DIR, "real", EXTRACT_FPS
+)
+seq_fake_total = extract_class_sequential(
+    FAKE_SRC, fake_videos, SEQ_FAKE_DIR, "fake", EXTRACT_FPS
+)
+
+print(f"\n  Sequential real frames: {seq_real_total}")
+print(f"  Sequential fake frames: {seq_fake_total}")
+print()
+
+# ---------------------------------------------------------------------------
 # Step 5: Build manifest.csv
 # ---------------------------------------------------------------------------
 
@@ -281,9 +383,12 @@ print("-" * 65)
 print("LABEL DISTRIBUTION")
 print("-" * 65)
 total = len(all_rows)
-print(f"  Label 0 (REAL) : {n_real:4d}  ({100*n_real/total:.1f}%)")
-print(f"  Label 1 (FAKE) : {n_fake:4d}  ({100*n_fake/total:.1f}%)")
-print(f"  Total          : {total:4d}")
+if total > 0:
+    print(f"  Label 0 (REAL) : {n_real:4d}  ({100*n_real/total:.1f}%)")
+    print(f"  Label 1 (FAKE) : {n_fake:4d}  ({100*n_fake/total:.1f}%)")
+    print(f"  Total          : {total:4d}")
+else:
+    print("  No frames extracted — check source videos and face detection.")
 print()
 
 # ---------------------------------------------------------------------------
@@ -298,6 +403,11 @@ print(f"  Unique videos: {n_videos}  (video-level split protects against leakage
 print(f"  Real frames  : {n_real}  ->  {REAL_DIR}")
 print(f"  Fake frames  : {n_fake}  ->  {FAKE_DIR}")
 print(f"  Image size   : {TARGET_SIZE}×{TARGET_SIZE} px face crops (aligned)")
+print()
+print(f"  Sequential frames ({EXTRACT_FPS} FPS, per-video):")
+print(f"    Real: {seq_real_total} frames  ->  {SEQ_REAL_DIR}/<video_id>/")
+print(f"    Fake: {seq_fake_total} frames  ->  {SEQ_FAKE_DIR}/<video_id>/")
+print()
 print(f"  Date         : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print()
 print("NEXT STEP:  python ensemble.py")
