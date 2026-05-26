@@ -169,7 +169,8 @@ print()
 # Helper: extract frames from a set of videos into a folder
 # ---------------------------------------------------------------------------
 
-def extract_class(src_dir, videos, out_dir, prefix, label, target_n, fps):
+def extract_class_sequential(src_dir, videos, out_dir, prefix, label, target_n, fps,
+                             max_videos=20, max_frames_per_video=150):
     """
     Extract face crops from videos into out_dir.
     Returns list of manifest rows: {file_path, label, video_id}.
@@ -178,14 +179,15 @@ def extract_class(src_dir, videos, out_dir, prefix, label, target_n, fps):
     rows   = []
     saved  = 0
     needed = (target_n + fps - 1) // fps   # how many videos to open
+    capped_videos = min(needed, max_videos)
 
-    for vid_name in videos[:needed]:
+    for vid_name in videos[:capped_videos]:
         if saved >= target_n:
             break
 
         vid_id   = os.path.splitext(vid_name)[0]          # e.g. "000"
         vid_path = os.path.join(src_dir, vid_name)
-        faces    = extract_faces_from_video(vid_path, fps, TARGET_SIZE)
+        faces    = extract_faces_from_video(vid_path, min(fps, max_frames_per_video), TARGET_SIZE)
 
         for _, crop in faces:
             if saved >= target_n:
@@ -205,7 +207,7 @@ def extract_class(src_dir, videos, out_dir, prefix, label, target_n, fps):
             print(f"  Saved {saved}/{target_n} {prefix} frames ...")
 
     print(f"  Extracted {saved} {prefix} frames from "
-          f"{min(needed, len(videos))} videos.")
+          f"{min(capped_videos, len(videos))} videos.")
     return rows
 
 
@@ -216,8 +218,8 @@ def extract_class(src_dir, videos, out_dir, prefix, label, target_n, fps):
 print("-" * 65)
 print(f"REAL FRAMES  <-  {REAL_SRC}")
 print("-" * 65)
-real_rows = extract_class(REAL_SRC, real_videos, REAL_DIR, "real", 0,
-                          TARGET_PER_CLASS, FRAMES_PER_VIDEO)
+real_rows = extract_class_sequential(REAL_SRC, real_videos, REAL_DIR, "real", 0,
+                                     TARGET_PER_CLASS, FRAMES_PER_VIDEO)
 print(f"  Total real on disk: {count_jpgs(REAL_DIR)}")
 print()
 
@@ -228,8 +230,8 @@ print()
 print("-" * 65)
 print(f"FAKE FRAMES  <-  {FAKE_SRC}")
 print("-" * 65)
-fake_rows = extract_class(FAKE_SRC, fake_videos, FAKE_DIR, "fake", 1,
-                          TARGET_PER_CLASS, FRAMES_PER_VIDEO)
+fake_rows = extract_class_sequential(FAKE_SRC, fake_videos, FAKE_DIR, "fake", 1,
+                                     TARGET_PER_CLASS, FRAMES_PER_VIDEO)
 print(f"  Total fake on disk: {count_jpgs(FAKE_DIR)}")
 print()
 
