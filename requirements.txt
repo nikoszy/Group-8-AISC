@@ -62,5 +62,6 @@ typer==0.25.1
 typing_extensions==4.15.0
 tzdata==2026.2
 urllib3==2.6.3
+xgboost>=2.0.0
 xxhash==3.7.0
 yarl==1.23.0
