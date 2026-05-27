@@ -38,6 +38,12 @@ FRAMES_PER_VIDEO = 5     # frames sampled from each video
 MIN_BRIGHTNESS   = 40    # reject frames darker than this mean pixel value
 MIN_FACE_FRAC    = 0.04  # reject face crop if face area < 4% of frame area
 
+# Detection quality thresholds (applied inside detect_face_crop)
+CONF_THRESHOLD = 0.7    # min Haar level-weight to accept a detection
+ASPECT_MIN     = 0.7    # min width/height ratio  (rejects tall-narrow boxes, e.g. hair)
+ASPECT_MAX     = 1.4    # max width/height ratio  (rejects wide-flat boxes, e.g. ear strips)
+CENTER_Y_MAX   = 0.60   # box centre must be in the top 60 % of the frame height
+
 _FACE_CASCADE = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
@@ -48,28 +54,52 @@ _FACE_CASCADE = cv2.CascadeClassifier(
 
 def detect_face_crop(frame, target_size):
     """
-    Detect the largest face and return a padded square crop resized to
-    target_size.  Returns None if no face is found or the face is too small.
+    Detect the largest confident face and return a padded square crop resized
+    to target_size.  Returns None when:
+      - no face is detected at all,
+      - all detections fall below CONF_THRESHOLD,
+      - the best detection fails the geometry checks:
+          * centre-Y outside the top 60 % of the frame (side-profile / torso hit), or
+          * aspect ratio (w/h) outside 0.7 – 1.4 (ear strip / hair column), or
+      - the accepted face area is below MIN_FACE_FRAC of the frame (too distant).
     """
-    h, w = frame.shape[:2]
-    gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    faces = _FACE_CASCADE.detectMultiScale(
-        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+    frame_h, frame_w = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    rects, _, weights = _FACE_CASCADE.detectMultiScale3(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30),
+        outputRejectLevels=True
     )
 
-    if len(faces) == 0:
+    if len(rects) == 0:
         return None
 
-    x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+    # 1. Confidence gate — drop weak detections
+    confident = [
+        (rect, float(wt))
+        for rect, wt in zip(rects, weights)
+        if float(wt) >= CONF_THRESHOLD
+    ]
+    if not confident:
+        return None
 
-    # Reject if face area is too small relative to the frame
-    if (fw * fh) < (MIN_FACE_FRAC * h * w):
+    # 2. Largest area among confident detections
+    (x, y, fw, fh), _ = max(confident, key=lambda rw: rw[0][2] * rw[0][3])
+
+    # 3. Geometry checks — reject off-centre and non-square boxes
+    if (y + fh / 2) / frame_h > CENTER_Y_MAX:
+        return None
+    if not (ASPECT_MIN <= fw / fh <= ASPECT_MAX):
+        return None
+
+    # 4. Reject if face area is too small relative to the frame
+    if (fw * fh) < (MIN_FACE_FRAC * frame_h * frame_w):
         return None
 
     # 15 % padding on each side
     pad = int(max(fw, fh) * 0.15)
     x1 = max(0, x - pad);  y1 = max(0, y - pad)
-    x2 = min(w, x + fw + pad); y2 = min(h, y + fh + pad)
+    x2 = min(frame_w, x + fw + pad); y2 = min(frame_h, y + fh + pad)
     crop = frame[y1:y2, x1:x2]
 
     return cv2.resize(crop, (target_size, target_size),
@@ -140,7 +170,10 @@ print(f"  Videos   : {TARGET_PER_CLASS // FRAMES_PER_VIDEO} per class  "
       f"({FRAMES_PER_VIDEO} frames each)")
 print(f"  Crop size: {TARGET_SIZE}×{TARGET_SIZE} px")
 print(f"  Filters  : brightness >= {MIN_BRIGHTNESS}  |  "
-      f"face area >= {int(MIN_FACE_FRAC*100)}% of frame")
+      f"face area >= {int(MIN_FACE_FRAC*100)}% of frame  |  "
+      f"confidence >= {CONF_THRESHOLD}  |  "
+      f"aspect {ASPECT_MIN}–{ASPECT_MAX}  |  "
+      f"centre-Y <= {int(CENTER_Y_MAX*100)}%")
 print()
 
 os.makedirs(REAL_DIR, exist_ok=True)
