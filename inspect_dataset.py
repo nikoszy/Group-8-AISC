@@ -1,0 +1,282 @@
+# =============================================================================
+# inspect_dataset.py
+# =============================================================================
+# Step 1 of Module 3.
+#   - Extracts face frames from FaceForensics++ C23 videos already on disk.
+#   - 50 videos × 4 frames per class  →  200 samples per class.
+#   - Saves video_id in the manifest so ensemble.py can do video-level splits
+#     and avoid identity leakage between train and val sets.
+#   - Rejects low-quality frames (too dark, no face found).
+#
+# LABEL CONVENTION
+#   0 = REAL  (data/FaceForensics++_C23/original/)
+#   1 = FAKE  (data/FaceForensics++_C23/Deepfakes/)
+# =============================================================================
+
+import os
+import csv
+import numpy as np
+from datetime import datetime
+
+import cv2
+
+from src.preprocessing.face_detector import (
+    CONF_THRESHOLD,
+    ASPECT_MIN,
+    ASPECT_MAX,
+    CENTER_Y_MAX,
+    MIN_FACE_FRAC,
+    detect_face_crop,
+)
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+FF_DIR    = os.path.join("data", "FaceForensics++_C23")
+REAL_SRC  = os.path.join(FF_DIR, "original")
+FAKE_SRC  = os.path.join(FF_DIR, "Deepfakes")
+
+REAL_DIR      = os.path.join("data", "real", "frames")
+FAKE_DIR      = os.path.join("data", "fake", "frames")
+MANIFEST_PATH = os.path.join("data", "manifest.csv")
+
+TARGET_SIZE      = 224   # face-crop output size (pixels)
+TARGET_PER_CLASS = 500   # frames to save per class
+FRAMES_PER_VIDEO = 5     # frames sampled from each video
+MIN_BRIGHTNESS   = 40    # reject frames darker than this mean pixel value
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def extract_faces_from_video(video_path, n_frames, target_size):
+    """
+    Open a video, sample n_frames evenly, detect and crop faces.
+    Returns list of (frame_index, face_crop) tuples for accepted frames only.
+    Rejects dark frames and frames where no face passes the quality check.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return []
+
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        cap.release()
+        return []
+
+    margin  = max(1, total // 10)
+    indices = np.linspace(margin, total - margin - 1, n_frames, dtype=int)
+
+    results = []
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            continue
+
+        # Reject very dark frames (often transitions or low-light artifacts)
+        if float(np.mean(frame)) < MIN_BRIGHTNESS:
+            continue
+
+        crop = detect_face_crop(frame, target_size=target_size)
+        if crop is not None:
+            results.append((int(idx), crop))
+
+    cap.release()
+    return results
+
+
+def count_jpgs(folder):
+    if not os.path.isdir(folder):
+        return 0
+    return len([f for f in os.listdir(folder) if f.lower().endswith(".jpg")])
+
+
+def clear_folder(folder):
+    if os.path.isdir(folder):
+        for f in os.listdir(folder):
+            if f.lower().endswith(".jpg"):
+                os.remove(os.path.join(folder, f))
+
+
+# ---------------------------------------------------------------------------
+# Step 1: Greet + make folders
+# ---------------------------------------------------------------------------
+
+print("=" * 65)
+print("MODULE 3 -- DATASET INSPECTION (FaceForensics++ C23)")
+print("=" * 65)
+print()
+print("  Extracting face crops from local FF++ C23 videos.")
+print(f"  Target   : {TARGET_PER_CLASS} frames per class")
+print(f"  Videos   : {TARGET_PER_CLASS // FRAMES_PER_VIDEO} per class  "
+      f"({FRAMES_PER_VIDEO} frames each)")
+print(f"  Crop size: {TARGET_SIZE}×{TARGET_SIZE} px")
+print(f"  Filters  : brightness >= {MIN_BRIGHTNESS}  |  "
+      f"face area >= {int(MIN_FACE_FRAC*100)}% of frame  |  "
+      f"confidence >= {CONF_THRESHOLD}  |  "
+      f"aspect {ASPECT_MIN}–{ASPECT_MAX}  |  "
+      f"centre-Y <= {int(CENTER_Y_MAX*100)}%")
+print()
+
+os.makedirs(REAL_DIR, exist_ok=True)
+os.makedirs(FAKE_DIR, exist_ok=True)
+print(f"[OK] Folders ready: {REAL_DIR}  |  {FAKE_DIR}")
+print()
+
+# ---------------------------------------------------------------------------
+# Step 2: Verify source videos
+# ---------------------------------------------------------------------------
+
+if not os.path.isdir(REAL_SRC):
+    print(f"[ERROR] Not found: {REAL_SRC}")
+    raise SystemExit(1)
+if not os.path.isdir(FAKE_SRC):
+    print(f"[ERROR] Not found: {FAKE_SRC}")
+    raise SystemExit(1)
+
+real_videos = sorted([f for f in os.listdir(REAL_SRC) if f.endswith(".mp4")])
+fake_videos = sorted([f for f in os.listdir(FAKE_SRC) if f.endswith(".mp4")])
+print(f"  Real videos available : {len(real_videos)}")
+print(f"  Fake videos available : {len(fake_videos)}")
+print()
+
+# ---------------------------------------------------------------------------
+# Helper: extract frames from a set of videos into a folder
+# ---------------------------------------------------------------------------
+
+def extract_class(src_dir, videos, out_dir, prefix, label, target_n, fps):
+    """
+    Extract face crops from videos into out_dir.
+    Returns list of manifest rows: {file_path, label, video_id}.
+    """
+    clear_folder(out_dir)
+    rows   = []
+    saved  = 0
+    needed = (target_n + fps - 1) // fps   # how many videos to open
+
+    for vid_name in videos[:needed]:
+        if saved >= target_n:
+            break
+
+        vid_id   = os.path.splitext(vid_name)[0]          # e.g. "000"
+        vid_path = os.path.join(src_dir, vid_name)
+        faces    = extract_faces_from_video(vid_path, fps, TARGET_SIZE)
+
+        for _, crop in faces:
+            if saved >= target_n:
+                break
+            filename = f"{prefix}_{str(saved).zfill(4)}.jpg"
+            path     = os.path.join(out_dir, filename)
+            if cv2.imwrite(path, crop):
+                rows.append({
+                    "file_path"     : path,
+                    "label"         : label,
+                    "video_id"      : f"{prefix}_{vid_id}",
+                    "source_dataset": f"FaceForensics++_C23/{src_dir.split(os.sep)[-1]}",
+                })
+                saved += 1
+
+        if saved % 40 == 0 and saved > 0:
+            print(f"  Saved {saved}/{target_n} {prefix} frames ...")
+
+    print(f"  Extracted {saved} {prefix} frames from "
+          f"{min(needed, len(videos))} videos.")
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Extract REAL frames
+# ---------------------------------------------------------------------------
+
+print("-" * 65)
+print(f"REAL FRAMES  <-  {REAL_SRC}")
+print("-" * 65)
+real_rows = extract_class(REAL_SRC, real_videos, REAL_DIR, "real", 0,
+                          TARGET_PER_CLASS, FRAMES_PER_VIDEO)
+print(f"  Total real on disk: {count_jpgs(REAL_DIR)}")
+print()
+
+# ---------------------------------------------------------------------------
+# Step 4: Extract FAKE frames
+# ---------------------------------------------------------------------------
+
+print("-" * 65)
+print(f"FAKE FRAMES  <-  {FAKE_SRC}")
+print("-" * 65)
+fake_rows = extract_class(FAKE_SRC, fake_videos, FAKE_DIR, "fake", 1,
+                          TARGET_PER_CLASS, FRAMES_PER_VIDEO)
+print(f"  Total fake on disk: {count_jpgs(FAKE_DIR)}")
+print()
+
+# ---------------------------------------------------------------------------
+# Step 5: Build manifest.csv
+# ---------------------------------------------------------------------------
+
+print("-" * 65)
+print(f"BUILDING MANIFEST  ->  {MANIFEST_PATH}")
+print("-" * 65)
+
+all_rows = real_rows + fake_rows
+with open(MANIFEST_PATH, "w", newline="", encoding="utf-8") as fh:
+    writer = csv.DictWriter(
+        fh, fieldnames=["file_path", "label", "video_id", "source_dataset"]
+    )
+    writer.writeheader()
+    writer.writerows(all_rows)
+
+n_real   = sum(1 for r in all_rows if r["label"] == 0)
+n_fake   = sum(1 for r in all_rows if r["label"] == 1)
+n_videos = len(set(r["video_id"] for r in all_rows))
+print(f"  Rows    : {len(all_rows)}  ({n_real} real, {n_fake} fake)")
+print(f"  Videos  : {n_videos} unique  (enables video-level split in ensemble.py)")
+print()
+
+# ---------------------------------------------------------------------------
+# Step 6: Sample inspection
+# ---------------------------------------------------------------------------
+
+print("-" * 65)
+print("SAMPLE INSPECTION  (first 3 real, first 3 fake)")
+print("-" * 65)
+import numpy as _np
+for label_val, folder, tag in [(0, REAL_DIR, "REAL"), (1, FAKE_DIR, "FAKE")]:
+    files = sorted([f for f in os.listdir(folder) if f.endswith(".jpg")])[:3]
+    for fname in files:
+        img = cv2.imread(os.path.join(folder, fname))
+        if img is not None:
+            print(f"  [{tag}] {fname}  shape={img.shape}  "
+                  f"mean={float(_np.mean(img)):.1f}  std={float(_np.std(img)):.1f}")
+print()
+
+# ---------------------------------------------------------------------------
+# Step 7: Label distribution
+# ---------------------------------------------------------------------------
+
+print("-" * 65)
+print("LABEL DISTRIBUTION")
+print("-" * 65)
+total = len(all_rows)
+print(f"  Label 0 (REAL) : {n_real:4d}  ({100*n_real/total:.1f}%)")
+print(f"  Label 1 (FAKE) : {n_fake:4d}  ({100*n_fake/total:.1f}%)")
+print(f"  Total          : {total:4d}")
+print()
+
+# ---------------------------------------------------------------------------
+# Final summary
+# ---------------------------------------------------------------------------
+
+print("=" * 65)
+print("INSPECTION COMPLETE")
+print("=" * 65)
+print(f"  Manifest     : {MANIFEST_PATH}  ({len(all_rows)} rows)")
+print(f"  Unique videos: {n_videos}  (video-level split protects against leakage)")
+print(f"  Real frames  : {n_real}  ->  {REAL_DIR}")
+print(f"  Fake frames  : {n_fake}  ->  {FAKE_DIR}")
+print(f"  Image size   : {TARGET_SIZE}×{TARGET_SIZE} px face crops (aligned)")
+print(f"  Date         : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print()
+print("NEXT STEP:  python ensemble.py")
+print("=" * 65)

@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── CSS custom properties (design tokens) ─────────────────────────── */
+:root {
+  --bg:           #07090E;
+  --surface:      #0D1219;
+  --border-amber: rgba(212, 175, 55, 0.15);
+  --border-dim:   rgba(255, 255, 255, 0.05);
+  --text:         #C8C0A8;
+  --muted:        #4A5568;
+  --fake:         #FF4136;
+  --real:         #2ECC71;
+  --uncertain:    #F39C12;
+  --gold:         #D4AF37;
+}
+
+/* ── Base reset ─────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'DM Mono', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ── Grain overlay ──────────────────────────────────────────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.035;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────── */
+::-webkit-scrollbar          { width: 6px; height: 6px; }
+::-webkit-scrollbar-track    { background: var(--surface); }
+::-webkit-scrollbar-thumb    { background: rgba(212,175,55,0.25); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(212,175,55,0.45); }
+
+/* ── Selection ──────────────────────────────────────────────────────── */
+::selection { background: rgba(212, 175, 55, 0.2); }
+
+/* ── Confidence band needle ─────────────────────────────────────────── */
+.confidence-needle {
+  transition: left 800ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ── Scanline shimmer (verdict hero number) ─────────────────────────── */
+.scanline-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.scanline-shimmer::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 45%;
+  background: linear-gradient(to bottom, transparent, rgba(212,175,55,0.07), transparent);
+  pointer-events: none;
+  animation: scanline 1.8s ease-in-out 0.4s 1;
+}
+
+/* ── Score bar fill ─────────────────────────────────────────────────── */
+.score-bar-fill {
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1) 0.2s;
+}

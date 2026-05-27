@@ -1,0 +1,74 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data — large files, do not commit
+data/real/
+data/fake/
+data/FaceForensics++_C23/
+data/manifest.csv
+data/module3_features.csv
+data/plots/
+data/visualizations/
+data/
+
+# Model weights — gitignored everywhere (including artifacts/)
+*.pt
+*.pth
+*.h5
+*.pkl
+*.joblib
+
+# Model registry — artifacts/ directory
+# artifacts/model_registry.json is human-readable and git-tracked (intentionally NOT excluded)
+# artifacts/*.pkl and artifacts/*.pth are excluded by the *.pkl / *.pth rules above
+# Force-track the registry JSON in case a broader rule would catch it:
+!artifacts/model_registry.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated EDA output
+eda_outputs/
+
+# Logs and temp
+*.log
+*.tmp
+*.bak
+
+# Kaggle credentials
+kaggle.json
+.kaggle/
+
+# Media files
+*.jpg
+*.png
+*.mp4
+*.avi
+*.mov
+*.pyc
