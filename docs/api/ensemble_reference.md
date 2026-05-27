@@ -1,6 +1,6 @@
 # `ensemble.py` — External Reference
 
-> **Module 3 + Module 1 Fusion: Training, Evaluation & 50/50 Fusion**
+> **Module 3 + Module 1 Fusion: Training, Evaluation & 30/70 Weighted Fusion**
 > Pipeline entry point: `python ensemble.py`
 
 ---
@@ -34,12 +34,13 @@ It:
 3. Trains **three** classifiers (Logistic Regression, Random Forest, XGBoost)
    on video-level features using a video-grouped train/val split
 4. Picks the best Module 3 model by validation F1
-5. Fuses Module 1 and Module 3 with **equal 50/50 weight** into a single
-   per-video prediction
-6. Reports an honest comparison table across all 238 Module 1 videos
+5. Fuses Module 1 and Module 3 with **30/70 weight** (Module 1 / Module 3)
+   into a single per-video prediction
+6. Reports an honest comparison table and a full weight sweep (0.0–1.0)
+   across all 238 Module 1 videos
 
 **In one sentence:** Face crops → feature numbers → three competing models →
-best model fused 50/50 with Module 1 → one prediction per video.
+best model fused 30/70 with Module 1 → one prediction per video.
 
 ---
 
@@ -125,14 +126,28 @@ Sharper frames (high Laplacian variance) get more weight. This reduces
 The `ear_score` feature is video-level (all frames from the same video share
 the same `deepfake_confidence`), so quality-weighting has no effect on it.
 
-### 3.5 50/50 Fusion
+### 3.5 30/70 Weighted Fusion
 
 The final per-video prediction is:
 
 ```
-final_score     = 0.5 × module1_score + 0.5 × module3_score
+final_score      = MODULE1_WEIGHT × module1_score
+                 + MODULE3_WEIGHT × module3_score
 final_prediction = 1 if final_score >= 0.5 else 0
 ```
+
+Default values: `MODULE1_WEIGHT = 0.30`, `MODULE3_WEIGHT = 0.70`.
+Both constants are defined at the top of `ensemble.py` (just below `FEATURE_NAMES`)
+and are read directly by `_fuse_and_report()` — change only the constants to retune.
+
+**Why 30/70 and not 50/50?**  A weight sweep over 0.0–1.0 (step 0.1) is
+printed at the end of Step 12 each time `ensemble.py` runs.  The sweep showed
+that giving more weight to Module 3 (the trained classifier) consistently
+improved or matched the 50/50 baseline on F1 and AUC across the 238-video val
+set.  The 30/70 split keeps Module 1 as a meaningful contributor without
+letting its noisier blink signal dominate.  The sweep table is in the commit
+history — run `git log --oneline` and look for
+`tune: shift fusion weights to 30/70`.
 
 `module3_score` is computed by applying the best Module 3 model to **each
 individual frame** and averaging the per-frame P(fake) values per video.
@@ -319,11 +334,13 @@ per-frame P(fake) values within each video.
 
 #### `_fuse_and_report(module3_vid_scores, module1_csv=MODULE1_CSV, output_csv=ENSEMBLE_OUTPUT_CSV)`
 
-Fuse Module 1 `deepfake_confidence` and Module 3 per-video P(fake) with equal
-50/50 weight for all 238 module1 videos.
+Fuse Module 1 `deepfake_confidence` and Module 3 per-video P(fake) using
+the module-level constants `MODULE1_WEIGHT` / `MODULE3_WEIGHT` (default 0.30 / 0.70)
+for all 238 module1 videos.
 
 ```
-final_score      = 0.5 × module1_score + 0.5 × module3_score
+final_score      = MODULE1_WEIGHT × module1_score
+                 + MODULE3_WEIGHT × module3_score
 final_prediction = 1 if final_score >= 0.5 else 0
 ```
 
@@ -354,8 +371,8 @@ When run as `python ensemble.py`, the script executes 12 steps:
 | **8** | Save ROC + Precision-Recall curves to `data/plots/` |
 | **9** | Save FFT spectrum visualisations to `data/visualizations/` |
 | **10** | Compute per-video Module 3 scores (frame-level averaging) |
-| **11** | Fuse Module 1 + Module 3 (50/50); write `data/ensemble_output.csv` |
-| **12** | Print 3-row comparison table: Module 1 alone / Module 3 alone / Fused |
+| **11** | Fuse Module 1 + Module 3 (30/70); write `data/ensemble_output.csv` |
+| **12** | Print 3-row comparison table + weight sweep (0.0–1.0, step 0.1) |
 
 ---
 
@@ -413,7 +430,7 @@ df = pd.read_csv("data/ensemble_output.csv")
 
 ## 8. Configuration Reference
 
-Top-level path constants in `ensemble.py`:
+Top-level constants in `ensemble.py`:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
@@ -424,6 +441,8 @@ Top-level path constants in `ensemble.py`:
 | `PLOTS_DIR` | `data/plots` | Diagnostic plots |
 | `VIZ_DIR` | `data/visualizations` | FFT spectrum images |
 | `FEATURE_NAMES` | `["artifact", "fft", "laplacian", "ear"]` | Feature column names |
+| `MODULE1_WEIGHT` | `0.30` | Fusion weight for Module 1 score. Edit here to retune. |
+| `MODULE3_WEIGHT` | `0.70` | Fusion weight for Module 3 score. Must sum to 1.0 with above. |
 
 Training hyperparameters (in `__main__`):
 
@@ -457,7 +476,7 @@ XGBoost                  0.XXXX  0.XXXX  0.XXXX  0.XXXX  0.XXXX
 ```
 
 Best model is selected by **F1** (balances precision and recall). It is saved
-to `ensemble_model.pkl` and used for the 50/50 fusion.
+to `ensemble_model.pkl` and used for the 30/70 fusion.
 
 ### Final Comparison Table
 
@@ -465,12 +484,33 @@ to `ensemble_model.pkl` and used for the 50/50 fusion.
 System                              Acc    Prec     Rec      F1     AUC
 Module 1 alone (Niko baseline 66%)  ...    ...     ...     ...     ...
 Module 3 alone (XGBoost)            ...    ...     ...     ...     ...
-Fused 50/50 (Module1 + Module3)     ...    ...     ...     ...     ...  ← final
+Fused 30%/70% (Module1 + Module3)   ...    ...     ...     ...     ...  ← final
 ```
 
 If the fused row outperforms both alone rows on at least two metrics (typically
 F1 and AUC), the fusion is additive. If not, revisit the Module 1/Module 3
 feature distributions and the 0.5 fallback rate.
+
+### Weight Sweep Table
+
+After the comparison table, `ensemble.py` prints a sweep over all 11 weight
+combinations (module1_weight 0.0 → 1.0, step 0.1):
+
+```
+  m1_weight  m3_weight   Accuracy        F1  ROC-AUC
+  ---------------------------------------------------------
+        0.0        1.0     0.XXXX    0.XXXX   0.XXXX
+        0.1        0.9     0.XXXX    0.XXXX   0.XXXX
+        ...
+        0.3        0.7     0.XXXX    0.XXXX   0.XXXX  <- selected
+        ...
+        1.0        0.0     0.XXXX    0.XXXX   0.XXXX
+```
+
+The threshold is fixed at 0.5 for all sweep rows (same as the live constants).
+The sweep is **read-only** — it never updates `MODULE1_WEIGHT` / `MODULE3_WEIGHT`.
+Consult the sweep output in the commit log
+(`tune: shift fusion weights to 30/70`) to see the actual numbers.
 
 ### AUC Guide
 

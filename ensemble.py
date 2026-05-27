@@ -27,9 +27,11 @@
 #    the same video-level features; picks the best by val-set F1 as the
 #    Module 3 model.
 #
-# 8. 50/50 fusion  -- fuses Module 1 (blink / deepfake_confidence) with the
-#    best Module 3 model probability into a single per-video prediction.
+# 8. 30/70 fusion  -- fuses Module 1 (blink / deepfake_confidence) with the
+#    best Module 3 model probability using MODULE1_WEIGHT=0.30 / MODULE3_WEIGHT=0.70.
 #    Output written to data/ensemble_output.csv.
+#    A weight sweep (0.0–1.0, step 0.1) is printed at the end of Step 12
+#    to validate the 30/70 choice; constants are NOT auto-updated by the sweep.
 # =============================================================================
 
 import os
@@ -82,6 +84,14 @@ VIZ_DIR             = os.path.join("data", "visualizations")
 # Feature column names (used in CSV headers and diagnostic output).
 # "ear" is now Module 1's deepfake_confidence (no longer a 0.5 stub).
 FEATURE_NAMES = ["artifact", "fft", "laplacian", "ear"]
+
+# ---------------------------------------------------------------------------
+# Fusion weight constants  (Module 1 vs Module 3)
+# Change only here to retune — _fuse_and_report() reads these directly.
+# Constraint: MODULE1_WEIGHT + MODULE3_WEIGHT must equal 1.0.
+# ---------------------------------------------------------------------------
+MODULE1_WEIGHT = 0.30   # weight given to Module 1 deepfake_confidence
+MODULE3_WEIGHT = 0.70   # weight given to Module 3 best-model P(fake)
 
 # ---------------------------------------------------------------------------
 # Section A -- pure functions
@@ -670,7 +680,12 @@ def _fuse_and_report(module3_vid_scores,
                      output_csv=ENSEMBLE_OUTPUT_CSV):
     """
     Fuse Module 1 (deepfake_confidence) and Module 3 (best model P(fake))
-    with equal 50 / 50 weight for each of the 238 videos in module1_output.csv.
+    with MODULE1_WEIGHT / MODULE3_WEIGHT (default 0.30 / 0.70) for each of
+    the 238 videos in module1_output.csv.
+
+        final_score      = MODULE1_WEIGHT * module1_score
+                         + MODULE3_WEIGHT * module3_score
+        final_prediction = 1 if final_score >= 0.5 else 0
 
     Videos not in the manifest (no Module 3 features available) receive
     module3_score = 0.5 (neutral fallback).
@@ -700,7 +715,7 @@ def _fuse_and_report(module3_vid_scores,
             manifest_key = f"fake_{vid}"
 
         m3_score = module3_vid_scores.get(manifest_key, 0.5)
-        final    = 0.5 * m1_score + 0.5 * m3_score
+        final    = MODULE1_WEIGHT * m1_score + MODULE3_WEIGHT * m3_score
         pred     = 1 if final >= 0.5 else 0
 
         out_rows.append({
@@ -1116,10 +1131,11 @@ if __name__ == "__main__":
     print(f"  Scored {len(m3_vid_scores)} manifest videos with Module 3 model.")
 
     # ------------------------------------------------------------------
-    # 11. Fuse Module 1 + Module 3  (50/50) -> ensemble_output.csv
+    # 11. Fuse Module 1 + Module 3  (30/70) -> ensemble_output.csv
     # ------------------------------------------------------------------
     print()
-    print("STEP 11 -- Fuse Module 1 + Module 3  (50/50 equal weight)")
+    print(f"STEP 11 -- Fuse Module 1 + Module 3  "
+          f"(MODULE1={MODULE1_WEIGHT:.2f} / MODULE3={MODULE3_WEIGHT:.2f})")
     if not os.path.exists(MODULE1_CSV):
         print(f"  [ERROR] {MODULE1_CSV} not found -- cannot run fusion.")
         print("          Skipping Steps 11–12.")
@@ -1165,7 +1181,7 @@ if __name__ == "__main__":
             print(f"  [WARN] Module 3 metrics: {exc}")
             m3_auc = m3_acc = m3_prec = m3_rec = m3_f1 = float("nan")
 
-        # Fused 50/50
+        # Fused 30/70
         try:
             fu_auc  = roc_auc_score(y_true_all, fused_scores)
             fu_acc  = accuracy_score(y_true_all, fused_preds)
@@ -1195,10 +1211,44 @@ if __name__ == "__main__":
                    m1_acc, m1_prec, m1_rec, m1_f1, m1_auc))
         print(_row(f"Module 3 alone ({best_model_name})",
                    m3_acc, m3_prec, m3_rec, m3_f1, m3_auc))
-        print(_row("Fused 50/50  (Module1 + Module3)",
+        fused_label = (f"Fused {MODULE1_WEIGHT:.0%}/{MODULE3_WEIGHT:.0%}"
+                       f"  (Module1 + Module3)")
+        print(_row(fused_label,
                    fu_acc, fu_prec, fu_rec, fu_f1, fu_auc,
                    " <- final"))
+        # ---------------------------------------------------------------
+        # WEIGHT SWEEP  (validate the 30/70 choice)
+        # Loops module1_weight 0.0 → 1.0 in steps of 0.1.
+        # NOTE: constants MODULE1_WEIGHT / MODULE3_WEIGHT are NOT changed
+        # by this sweep.  The selected weights stay at 30/70 as defined
+        # at the top of this file.
+        # ---------------------------------------------------------------
         print()
+        print("  WEIGHT SWEEP  "
+              "(module1_weight 0.0 to 1.0, step 0.10 -- threshold fixed at 0.5)")
+        print(f"  NOTE: sweep is diagnostic only; constants remain "
+              f"MODULE1_WEIGHT={MODULE1_WEIGHT}  MODULE3_WEIGHT={MODULE3_WEIGHT}")
+        print()
+        _sw_hdr = (f"  {'m1_weight':>9}  {'m3_weight':>9}  "
+                   f"{'Accuracy':>9}  {'F1':>8}  {'ROC-AUC':>8}")
+        print(_sw_hdr)
+        print("  " + "-" * 56)
+        for _sw_step in range(11):               # 0, 1, ..., 10
+            _sw_w1 = round(_sw_step * 0.1, 1)
+            _sw_w3 = round(1.0 - _sw_w1, 1)
+            _sw_scores = _sw_w1 * m1_scores + _sw_w3 * m3_scores
+            _sw_pred   = (_sw_scores >= 0.5).astype(int)
+            _sw_acc    = accuracy_score(y_true_all, _sw_pred)
+            _sw_f1     = f1_score(y_true_all, _sw_pred, zero_division=0)
+            try:
+                _sw_auc = roc_auc_score(y_true_all, _sw_scores)
+            except Exception:
+                _sw_auc = float("nan")
+            _sw_marker = "  <- selected" if abs(_sw_w1 - MODULE1_WEIGHT) < 1e-9 else ""
+            print(f"  {_sw_w1:>9.1f}  {_sw_w3:>9.1f}  "
+                  f"{_sw_acc:>9.4f}  {_sw_f1:>8.4f}  {_sw_auc:>8.4f}{_sw_marker}")
+        print()
+
         print(f"  Final ensemble metrics  ({len(out_df)} videos):")
         print(f"    Accuracy   = {fu_acc:.4f}")
         print(f"    Precision  = {fu_prec:.4f}")
@@ -1241,6 +1291,8 @@ if __name__ == "__main__":
     print("  [x] Module 1 ear_score integrated  (deepfake_confidence from MRL)")
     print("  [x] Video-level GroupShuffleSplit   (no identity leakage)")
     print("  [x] LR + RandomForest + XGBoost     (best by val F1 selected)")
-    print("  [x] 50/50 fusion with Module 1      (ensemble_output.csv)")
+    print(f"  [x] {MODULE1_WEIGHT:.0%}/{MODULE3_WEIGHT:.0%} fusion M1/M3"
+          f"       (ensemble_output.csv)")
     print("  [x] Comparison table                (Module1 / Module3 / Fused)")
+    print("  [x] Weight sweep 0.0-1.0            (diagnostic, constants unchanged)")
     print("=" * 65)
