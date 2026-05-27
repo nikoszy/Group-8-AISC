@@ -34,6 +34,11 @@ export interface AnalysisResponse {
   model_used: 'ensemble_learned' | 'equal_weights';
   cnn_active: boolean;
 
+  // Registry provenance (v2)
+  model_id:   string;
+  model_type: string;
+  model_f1:   number | null;
+
   // Frame counts + video metadata
   frames_analyzed: number;
   frames_sampled: number;

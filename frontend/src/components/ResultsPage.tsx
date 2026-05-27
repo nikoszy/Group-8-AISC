@@ -74,6 +74,9 @@ export function ResultsPage({ data, onReset }: ResultsPageProps) {
           probFakeMean={data.prob_fake_mean}
           confidence={data.confidence}
           modelUsed={data.model_used}
+          modelId={data.model_id}
+          modelType={data.model_type}
+          modelF1={data.model_f1}
         />
 
         {/* ── Stat tiles ──────────────────────────────────────────────── */}

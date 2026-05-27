@@ -1096,6 +1096,50 @@ if __name__ == "__main__":
           f"(model={best_model_name})")
 
     # ------------------------------------------------------------------
+    # 7b. Register model in the central model registry
+    # ------------------------------------------------------------------
+    print()
+    print("STEP 7b -- Register model in artifacts/model_registry.json")
+    try:
+        import shutil
+        import datetime
+        from src.model_registry import ModelRegistry
+
+        registry = ModelRegistry()
+        _ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+        _model_id = f"{best_model_name.lower().replace(' ', '_')}_{_ts}"
+
+        # Copy bundle to artifacts/ with timestamped name so old runs are
+        # preserved and the registry path stays stable even after retraining.
+        os.makedirs("artifacts", exist_ok=True)
+        _artifacts_path = os.path.join("artifacts", f"ensemble_model_{_ts}.pkl")
+        shutil.copy2(MODEL_PKL, _artifacts_path)
+
+        registry.register({
+            "model_id":      _model_id,
+            "model_type":    "lr",
+            "artifact_path": _artifacts_path,
+            "metrics": {
+                "f1":        metrics_ba["f1"],
+                "precision": metrics_ba["precision"],
+                "recall":    metrics_ba["recall"],
+                "auc":       metrics_ba["auc"],
+            },
+            "notes": (
+                f"4-feature LR (artifact+fft+laplacian+ear); "
+                f"val split seed=42; best_classifier={best_model_name}; "
+                f"threshold(bal-acc)={best_t_ba:.4f}"
+            ),
+            "comparable": True,
+        })
+        winner = registry.select_best(metric="f1")
+        print(f"  Registered: {_model_id}")
+        print(f"  Active model → {winner['model_id']}  (F1 = {winner['metrics']['f1']:.4f})")
+    except Exception as _reg_exc:
+        print(f"  [WARN] Registry update failed: {_reg_exc}")
+        print("         Training is still complete — registry is optional.")
+
+    # ------------------------------------------------------------------
     # 8. Diagnostic plots
     # ------------------------------------------------------------------
     print()

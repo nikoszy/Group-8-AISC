@@ -18,7 +18,7 @@ class FrameResult(BaseModel):
     frame_index: int = Field(..., description="0-based index within sampled frames")
     timestamp_sec: float = Field(..., description="Position in the video (seconds)")
     prob_fake: float = Field(..., description="Ensemble fake probability [0, 1]")
-    ear_score: float = Field(0.5, description="Eye-aspect-ratio score (stub: always 0.5)")
+    ear_score: float = Field(0.5, description="MRL blink-rate score [0,1] (video-level; 0.5 if MRL unavailable)")
     artifact_score: float = Field(..., description="JPEG recompression artifact score [0, 1]")
     fft_score: float = Field(..., description="FFT spectral slope anomaly score [0, 1]")
     laplacian_score: float = Field(..., description="Laplacian texture sharpness score [0, 1]")
@@ -64,6 +64,20 @@ class AnalysisResponse(BaseModel):
         description='"ensemble_learned" if data/ensemble_model.pkl was loaded, else "equal_weights"',
     )
     cnn_active: bool = Field(False, description="Always false — CNN path not in scope")
+
+    # ── Registry provenance (new in v2) ──────────────────────────────────────
+    model_id: str = Field(
+        "unknown",
+        description="Registry model_id of the model that produced this verdict",
+    )
+    model_type: str = Field(
+        "equal_weights",
+        description="lr | cnn | stacked | stacked_with_blink | equal_weights",
+    )
+    model_f1: Optional[float] = Field(
+        None,
+        description="Validation F1 of the active model from the registry (None if unavailable)",
+    )
 
     # ── Frame counts + video metadata ────────────────────────────────────────
     frames_analyzed: int = Field(..., description="Frames where a face was detected")

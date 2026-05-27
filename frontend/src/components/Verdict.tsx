@@ -15,6 +15,10 @@ interface VerdictProps {
   probFakeMean: number
   confidence: number
   modelUsed: string
+  // Registry provenance (v2) — optional for backward compat with Streamlit
+  modelId?:   string
+  modelType?: string
+  modelF1?:   number | null
 }
 
 /** easeOutCubic count-up hook */
@@ -51,7 +55,11 @@ const VERDICT_GLOWS: Record<string, string> = {
   UNCERTAIN: '0 0 60px rgba(243,156,18,0.15)',
 }
 
-export function Verdict({ verdict, probFakeMean, confidence, modelUsed }: VerdictProps) {
+export function Verdict({ verdict, probFakeMean, confidence, modelUsed, modelId, modelType, modelF1 }: VerdictProps) {
+  // Resolve display label: prefer registry model_type, fall back to model_used
+  const scoringLabel = modelType && modelType !== 'equal_weights'
+    ? modelType
+    : (modelUsed === 'ensemble_learned' ? 'LogReg (trained)' : 'Equal weights')
   const displayValue = useCountUp(probFakeMean, 1200)
   const verdictColor = VERDICT_COLORS[verdict] ?? 'var(--text)'
   const verdictGlow = VERDICT_GLOWS[verdict] ?? 'none'
@@ -127,10 +135,51 @@ export function Verdict({ verdict, probFakeMean, confidence, modelUsed }: Verdic
             Scoring Model
           </p>
           <p className="font-jbmono font-medium text-sm mt-0.5" style={{ color: 'var(--text)' }}>
-            {modelUsed === 'ensemble_learned' ? 'LogReg (trained)' : 'Equal weights'}
+            {scoringLabel}
+            {modelF1 != null && (
+              <span style={{ color: 'var(--muted)', marginLeft: '0.4em' }}>
+                (F1 = {modelF1.toFixed(2)})
+              </span>
+            )}
           </p>
         </div>
       </div>
+
+      {/* Collapsible model details */}
+      {(modelId || modelType) && (
+        <details
+          className="mt-4"
+          style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '0.75rem' }}
+        >
+          <summary
+            className="font-dmmono text-xs uppercase tracking-widest cursor-pointer select-none"
+            style={{ color: 'var(--muted)', listStyle: 'none' }}
+          >
+            ▸ Model details
+          </summary>
+          <div className="mt-3 space-y-1 pl-2">
+            {modelId && (
+              <p className="font-dmmono text-xs" style={{ color: 'var(--muted)' }}>
+                <span style={{ opacity: 0.6 }}>ID:</span>{' '}
+                <span style={{ color: 'var(--text)' }}>{modelId}</span>
+              </p>
+            )}
+            {modelType && (
+              <p className="font-dmmono text-xs" style={{ color: 'var(--muted)' }}>
+                <span style={{ opacity: 0.6 }}>Type:</span>{' '}
+                <span style={{ color: 'var(--text)' }}>{modelType}</span>
+              </p>
+            )}
+            {modelF1 != null && (
+              <p className="font-dmmono text-xs" style={{ color: 'var(--muted)' }}>
+                <span style={{ opacity: 0.6 }}>Val F1:</span>{' '}
+                <span style={{ color: 'var(--text)' }}>{modelF1.toFixed(4)}</span>
+                <span style={{ opacity: 0.5 }}> (held-out 20% split, seed=42)</span>
+              </p>
+            )}
+          </div>
+        </details>
+      )}
     </div>
   )
 }

@@ -52,9 +52,10 @@ MODEL_PATH    = os.path.join("data", "cnn_model.pth")
 
 IMG_SIZE            = 224
 BATCH_SIZE          = 16
-NUM_EPOCHS          = 50   # main training run
-CV_EPOCHS           = 25   # epochs per fold in cross-validation
-PATIENCE            = 12   # early stopping (val AUC does not improve)
+NUM_EPOCHS          = 30   # ↓ was 50 — CPU constraint; early stopping handles the rest
+CV_EPOCHS           = 8    # ↓ was 25 — 5 folds × 25 epochs is 4+ hrs on CPU; 8 still
+                           #   gives a meaningful AUC trend across folds
+PATIENCE            = 10   # ↓ was 12 — stop slightly sooner on real plateau
 LR_HEAD             = 1e-3
 LR_BACKBONE_LATE    = 1e-4   # features[7-8] — last MBConv + head conv
 LR_BACKBONE_EARLY   = 5e-5   # features[5-6] — wider unfreeze

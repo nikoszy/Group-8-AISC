@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -29,12 +29,18 @@ data/plots/
 data/visualizations/
 data/
 
-# Model weights
+# Model weights — gitignored everywhere (including artifacts/)
 *.pt
 *.pth
 *.h5
 *.pkl
 *.joblib
+
+# Model registry — artifacts/ directory
+# artifacts/model_registry.json is human-readable and git-tracked (intentionally NOT excluded)
+# artifacts/*.pkl and artifacts/*.pth are excluded by the *.pkl / *.pth rules above
+# Force-track the registry JSON in case a broader rule would catch it:
+!artifacts/model_registry.json
 
 # OS
 .DS_Store
