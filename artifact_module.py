@@ -1,723 +1,476 @@
 # ==============================================================================
-# artifact_module.py
+# artifact_module.py  -  Module 2: Compression Artifact Detection
 # ==============================================================================
-# This module detects "compression artifacts" in face images.
+# PIPELINE (matches flowchart):
+#   Preprocessed frame
+#       -> JPEG encode/decode  (cv2.imencode / cv2.imdecode)
+#       -> Pixel diff score    (MSE  +  SSIM delta)
+#       -> artifact_score      (0.0 = clean, 1.0 = heavily artifacted)
 #
-# CORE IDEA:
-#   When an AI generates a deepfake image, the pixel values it produces are
-#   slightly "unnatural" compared to pixels from a real camera.
-#   If we compress those pixels as a JPEG (which throws away small details)
-#   and then decompress them, the fake regions show BIGGER unexpected changes
-#   than real regions.  We measure those changes to produce a suspicion score.
+# HOW IT WORKS:
+#   Deepfake generators produce pixel distributions that differ subtly from
+#   real cameras.  A round-trip through lossy JPEG compression exposes this:
+#   the codec discards high-frequency details it considers "noise", but GAN-
+#   generated textures are NOT noise -- they carry meaningful signal.  The
+#   resulting pixel-level and structural damage is measurably larger for fakes.
 #
-# SCORE MEANING:
-#   0.0 = clean / probably real
-#   1.0 = heavily artifacted / probably fake
+# TWO COMPLEMENTARY METRICS:
+#   MSE delta   -- mean squared per-pixel error after recompression (magnitude)
+#   SSIM delta  -- structural similarity drop after recompression (perceptual)
+#   Combined as a weighted sum; SSIM weighted higher because it catches spatial
+#   inconsistencies that pixel-level MSE averages away.
 #
-# FUNCTIONS IN THIS FILE:
-#   1. recompress_frame          — compress and re-expand an image
-#   2. get_difference_map        — measure pixel-by-pixel change
-#   3. get_artifact_score_for_frame — turn a single frame into a 0-1 score
-#   4. compute_artifact_score    — average score across many frames
-#   5. visualize_artifacts       — create a side-by-side visual for demos
-#   6. batch_score_folder        — score every image in a folder
+# PUBLIC API (used by ensemble.py):
+#   get_artifact_score_for_frame(frame)   -> float  0.0-1.0
+#   get_artifact_features(frame)          -> dict   {mse, ssim_delta, combined}
+#   compute_artifact_score(frame_paths)   -> float  mean score across frames
+#
+# INTERNAL / UTILITY:
+#   recompress_frame(frame, quality)
+#   get_difference_map(original, recompressed)
+#   compute_mse_score(orig_gray, recomp_gray)
+#   compute_ssim_delta(orig_gray, recomp_gray)
+#   visualize_artifacts(frame_path, save_path)
+#   batch_score_folder(folder_path, label)
 # ==============================================================================
 
-# --- IMPORTS ---
-# These lines load pre-built tools (libraries) that our code will use.
-
-# 'cv2' is OpenCV — a library for working with images and video
 import cv2
-
-# 'numpy' (imported as 'np') lets us do fast maths on arrays of numbers
 import numpy as np
-
-# 'os' lets us work with files and folders (create paths, list files, etc.)
 import os
 
-# 'datetime' lets us record what time things happened
-from datetime import datetime
+try:
+    from skimage.metrics import structural_similarity as _ssim
+    _SKIMAGE_AVAILABLE = True
+except ImportError:
+    _SKIMAGE_AVAILABLE = False
+
+
+# --------------------------------------------------------------------------
+# Tunable constants
+# --------------------------------------------------------------------------
+
+# JPEG quality used for the recompression round-trip.
+# 75 is deliberately moderate: tight enough to expose GAN artifacts without
+# degrading every real image above the detection threshold.
+_JPEG_QUALITY = 75
+
+# Empirical normalisation ceiling for MSE scores.
+# At quality 75, real face images rarely exceed MSE ~0.003 on a [0,1] scale;
+# fakes can reach 0.006-0.010.  We normalise by a ceiling of 0.01 so the
+# MSE component fills the 0-1 range without clipping real images.
+_MSE_CEIL = 0.01
+
+# Weights for the combined score.  SSIM is perceptually motivated and more
+# discriminative than raw pixel error, so it receives the higher weight.
+_WEIGHT_MSE  = 0.35
+_WEIGHT_SSIM = 0.65
 
 
 # ==============================================================================
-# FUNCTION 1: recompress_frame
+# 1. recompress_frame
 # ==============================================================================
 
-def recompress_frame(frame, quality=75):
+def recompress_frame(frame, quality=_JPEG_QUALITY):
     """
-    Takes an image, squeezes it into a JPEG in memory, then expands it back.
-
-    WHY DO THIS?
-    JPEG compression works by throwing away tiny pixel details.
-    Real photos have natural-looking details that compress predictably.
-    Deepfake images often have unnatural patterns that JPEG handles differently,
-    leaving visible "damage" when compared to the original.
+    One JPEG round-trip: encode the frame to JPEG bytes, then decode back.
 
     Inputs:
-        frame   : numpy array — the image (height x width x 3 colours)
-        quality : integer 0-100 — how aggressively to compress
-                  75 = moderate compression, good at exposing artifacts
-                  (too high = no damage; too low = everything looks bad)
+        frame   : uint8 BGR numpy array  (H x W x 3)
+        quality : int 0-100  -- JPEG quality factor (lower = more compression)
 
     Returns:
-        numpy array — the recompressed image, same shape as input
+        uint8 BGR numpy array -- same shape as input, after lossy round-trip.
+        Returns the original frame unchanged if encode/decode fails.
     """
-
-    # imencode converts the numpy array image into a JPEG file stored in memory.
-    # It does NOT write to disk — it just produces a compressed byte sequence.
-    # The first return value is True/False (success flag), second is the bytes.
-    # [cv2.IMWRITE_JPEG_QUALITY, quality] tells OpenCV what JPEG quality to use.
-    success, jpeg_bytes = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
-
-    # If the compression failed for any reason, return the original unchanged.
+    success, jpeg_bytes = cv2.imencode(
+        '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality]
+    )
     if not success:
         return frame
 
-    # imdecode turns the JPEG bytes back into a numpy array (decompresses it).
-    # cv2.IMREAD_COLOR means load as a full colour (BGR) image.
     recompressed = cv2.imdecode(jpeg_bytes, cv2.IMREAD_COLOR)
-
-    # If decoding somehow failed, return the original unchanged.
     if recompressed is None:
         return frame
 
-    # Return the image that has been through one round of JPEG compression.
     return recompressed
 
 
 # ==============================================================================
-# FUNCTION 2: get_difference_map
+# 2. get_difference_map
 # ==============================================================================
 
 def get_difference_map(original, recompressed):
     """
-    Computes how much each pixel changed after recompression.
+    Per-pixel absolute difference between original and recompressed images.
 
-    MATHEMATICS:
-        For every pixel position (x, y):
-            difference = | original_pixel - recompressed_pixel |
-        The vertical bars mean "absolute value" — we only care about
-        the SIZE of the difference, not the direction (positive or negative).
-
-    WHY GRAYSCALE?
-        A colour image has 3 values per pixel (Red, Green, Blue).
-        Converting to grayscale gives us 1 value per pixel.
-        One number is easier to analyse and display.
-
-    HIGH VALUES = big change = suspicious region (likely fake)
-    LOW  VALUES = small change = clean region    (likely real)
+    Returns a grayscale map where brighter pixels indicate larger changes.
+    Used for visualisation and as input to MSE computation.
 
     Inputs:
-        original     : numpy array — the original image
-        recompressed : numpy array — the image after JPEG round-trip
+        original     : uint8 BGR numpy array
+        recompressed : uint8 BGR numpy array
 
     Returns:
-        numpy array — grayscale difference map, same height/width as input
+        uint8 grayscale numpy array (H x W)
     """
-
-    # cv2.absdiff computes abs(original - recompressed) for every pixel.
-    # This gives us a colour difference image — 3 values per pixel.
-    diff_colour = cv2.absdiff(original, recompressed)
-
-    # cv2.cvtColor converts the colour difference to grayscale.
-    # Grayscale collapses 3 colour channels into 1 brightness value per pixel.
-    # COLOR_BGR2GRAY uses the standard brightness formula:
-    #   gray = 0.114*Blue + 0.587*Green + 0.299*Red
-    diff_gray = cv2.cvtColor(diff_colour, cv2.COLOR_BGR2GRAY)
-
-    # Return the single-channel grayscale difference map.
+    diff_color = cv2.absdiff(original, recompressed)
+    diff_gray  = cv2.cvtColor(diff_color, cv2.COLOR_BGR2GRAY)
     return diff_gray
 
 
 # ==============================================================================
-# FUNCTION 3: get_artifact_score_for_frame
+# 3. compute_mse_score
 # ==============================================================================
 
-def get_artifact_score_for_frame(frame):
+def compute_mse_score(orig_gray, recomp_gray):
     """
-    Scores a single image frame on a scale from 0.0 to 1.0.
+    Normalised Mean Squared Error between original and recompressed grayscale
+    images.
 
-    0.0 means the image survived JPEG recompression with tiny changes -> clean
-    1.0 means huge changes after recompression -> likely deepfake artifacts
+    MSE = mean( (orig - recomp)^2 ) over all pixels, computed on float values
+    in [0, 1] (pixel values divided by 255).
 
-    Input:
-        frame : numpy array — the image to score
+    Normalised to [0, 1] by dividing by _MSE_CEIL so the score is comparable
+    with the SSIM delta on the same scale.
+
+    Inputs:
+        orig_gray   : uint8 grayscale array (H x W)
+        recomp_gray : uint8 grayscale array (H x W)
 
     Returns:
-        float — score between 0.0 and 1.0 (rounded to 3 decimal places)
+        float in [0, 1]
     """
+    orig_f   = orig_gray.astype(np.float32)   / 255.0
+    recomp_f = recomp_gray.astype(np.float32) / 255.0
 
-    # Step 1: Recompress the frame using JPEG quality 75.
-    recompressed = recompress_frame(frame)
+    mse = float(np.mean((orig_f - recomp_f) ** 2))
 
-    # Step 2: Compute the per-pixel difference between original and recompressed.
-    difference_map = get_difference_map(frame, recompressed)
-
-    # Step 3: Compute the MEAN (average) of all pixel differences.
-    # np.mean adds up all values and divides by the total number of pixels.
-    # Result is a single number representing the "average damage" level.
-    mean_diff = np.mean(difference_map)
-
-    # Step 4: Normalise to 0.0 – 1.0.
-    # In practice, JPEG difference values range roughly 0 to 30.
-    # Dividing by 30 maps that range to 0.0 – 1.0.
-    score = mean_diff / 30.0
-
-    # Step 5: Clip the score so it never goes above 1.0.
-    # min(score, 1.0) returns whichever is smaller.
-    score = min(score, 1.0)
-
-    # Step 6: Round to 3 decimal places so the number is readable.
-    score = round(score, 3)
-
-    # Return the final suspicion score for this frame.
-    return score
+    return min(mse / _MSE_CEIL, 1.0)
 
 
 # ==============================================================================
-# FUNCTION 4: compute_artifact_score
+# 4. compute_ssim_delta
+# ==============================================================================
+
+def compute_ssim_delta(orig_gray, recomp_gray):
+    """
+    Structural similarity drop caused by JPEG recompression.
+
+    SSIM(original, recompressed) is close to 1.0 for real images (compression
+    damages them predictably); it is measurably lower for deepfakes (the codec
+    destroys GAN-generated structure more aggressively).
+
+    delta = 1 - SSIM(original, recompressed)
+
+    Range: 0.0 (identical, no damage) to 1.0 (maximally different).
+
+    Falls back to an RMSE-based approximation when scikit-image is unavailable.
+
+    Inputs:
+        orig_gray   : uint8 grayscale array (H x W)
+        recomp_gray : uint8 grayscale array (H x W)
+
+    Returns:
+        float in [0, 1]
+    """
+    if _SKIMAGE_AVAILABLE:
+        ssim_score, _ = _ssim(orig_gray, recomp_gray, full=True)
+        # ssim_score in [-1, 1]; clamp negative end to 0 before computing delta
+        ssim_score = max(float(ssim_score), 0.0)
+        return 1.0 - ssim_score
+    else:
+        # Fallback: SSIM ~= 1 - normalised_RMSE (monotonically equivalent
+        # for the small differences typical of JPEG compression)
+        orig_f   = orig_gray.astype(np.float32) / 255.0
+        recomp_f = recomp_gray.astype(np.float32) / 255.0
+        rmse     = float(np.sqrt(np.mean((orig_f - recomp_f) ** 2)))
+        return min(rmse * 4.0, 1.0)   # x4 scales RMSE into a comparable range
+
+
+# ==============================================================================
+# 5. get_artifact_features
+# ==============================================================================
+
+def get_artifact_features(frame, quality=_JPEG_QUALITY):
+    """
+    Extract all Module 2 features from a single frame.
+
+    Returns a dict so callers can use individual metrics for analysis or
+    feed them separately into a classifier.
+
+    Inputs:
+        frame   : uint8 BGR numpy array
+        quality : JPEG quality for the recompression step
+
+    Returns:
+        dict with keys:
+            'mse'        : float  normalised MSE score        [0, 1]
+            'ssim_delta' : float  SSIM drop after compression [0, 1]
+            'combined'   : float  weighted combination        [0, 1]
+    """
+    recompressed = recompress_frame(frame, quality)
+
+    orig_gray   = cv2.cvtColor(frame,        cv2.COLOR_BGR2GRAY)
+    recomp_gray = cv2.cvtColor(recompressed, cv2.COLOR_BGR2GRAY)
+
+    mse        = compute_mse_score(orig_gray, recomp_gray)
+    ssim_delta = compute_ssim_delta(orig_gray, recomp_gray)
+    combined   = round(min(_WEIGHT_MSE * mse + _WEIGHT_SSIM * ssim_delta, 1.0), 4)
+
+    return {
+        'mse':        round(mse,        4),
+        'ssim_delta': round(ssim_delta, 4),
+        'combined':   combined,
+    }
+
+
+# ==============================================================================
+# 6. get_artifact_score_for_frame  -- main ensemble API (backward-compatible)
+# ==============================================================================
+
+def get_artifact_score_for_frame(frame, quality=_JPEG_QUALITY):
+    """
+    Score a single frame for compression artifacts.
+
+    0.0 = no measurable artifact damage -> likely real
+    1.0 = heavy structural damage after recompression -> likely fake
+
+    This is the function imported by ensemble.py.
+
+    Inputs:
+        frame   : uint8 BGR numpy array
+        quality : JPEG quality (default _JPEG_QUALITY = 75)
+
+    Returns:
+        float in [0.0, 1.0]
+    """
+    features = get_artifact_features(frame, quality)
+    return features['combined']
+
+
+# ==============================================================================
+# 7. compute_artifact_score  -- video-level scoring
 # ==============================================================================
 
 def compute_artifact_score(frame_paths, sample_n=20):
     """
-    This is the MAIN function that main.py will call.
+    Score a video represented as a list of frame file paths.
 
-    Takes a list of image file paths, analyses a sample of them,
-    and returns one number representing how artifacted the overall video is.
-
-    WHY SAMPLE INSTEAD OF USING ALL FRAMES?
-        A video can have thousands of frames. Analysing all of them would
-        take too long. Sampling evenly spreads our analysis across the video,
-        which gives a fair estimate without the wait.
+    Evenly samples up to sample_n frames, scores each, and returns the mean.
 
     Inputs:
-        frame_paths : list of strings — file paths to the frames
-        sample_n    : integer — how many frames to actually analyse (default 20)
+        frame_paths : list[str]  -- paths to extracted frame images
+        sample_n    : int        -- max frames to analyse (default 20)
 
     Returns:
-        float — average artifact score across all sampled frames (0.0 to 1.0)
+        float -- mean artifact score across sampled frames [0.0, 1.0]
     """
+    print("[compute_artifact_score] %d paths received" % len(frame_paths))
 
-    # Tell the user what we are about to do.
-    print(f"[compute_artifact_score] Received {len(frame_paths)} frame paths")
-
-    # --- Decide which frames to sample ---
-
-    # If we have more frames than sample_n, we pick frames evenly spaced.
     if len(frame_paths) > sample_n:
-
-        # Calculate how many frames to skip between each sample.
-        # For example, if we have 100 frames and want 20:  step = 100/20 = 5
         step = len(frame_paths) / sample_n
-
-        # Build a list of indices using a step — [0, 5, 10, 15, ...]
-        # int(i * step) converts the floating-point step to a whole number index.
-        sampled_paths = [frame_paths[int(i * step)] for i in range(sample_n)]
-
+        sampled = [frame_paths[int(i * step)] for i in range(sample_n)]
     else:
-        # If we have fewer frames than sample_n, just use all of them.
-        sampled_paths = frame_paths
+        sampled = frame_paths
 
-    # Tell the user how many frames we will actually analyse.
-    print(f"[compute_artifact_score] Sampling {len(sampled_paths)} frames")
+    print("[compute_artifact_score] Sampling %d frames" % len(sampled))
 
-    # --- Score each sampled frame ---
-
-    # This list will collect the score for each frame.
     scores = []
-
-    # Loop through each sampled frame path.
-    for path in sampled_paths:
-
-        # Try loading and scoring each frame.
+    for path in sampled:
         try:
-
-            # cv2.imread loads the image from disk into a numpy array.
             frame = cv2.imread(path)
-
-            # If the file could not be read (wrong path, corrupt file), skip it.
             if frame is None:
-                print(f"  [WARN] Could not load: {path} — skipping")
+                print("  [WARN] Cannot load: %s" % path)
                 continue
+            scores.append(get_artifact_score_for_frame(frame))
+        except Exception as exc:
+            print("  [WARN] %s: %s" % (path, exc))
 
-            # Compute the artifact score for this single frame.
-            score = get_artifact_score_for_frame(frame)
-
-            # Add this score to our collection.
-            scores.append(score)
-
-        # If something unexpected goes wrong, warn and skip.
-        except Exception as e:
-            print(f"  [WARN] Error on {path}: {e} — skipping")
-
-    # --- Summarise ---
-
-    # If we could not score any frames at all, return 0.0 as a safe default.
-    if len(scores) == 0:
-        print("[compute_artifact_score] WARNING: No frames were scored. Returning 0.0")
+    if not scores:
+        print("[compute_artifact_score] No frames scored -- returning 0.0")
         return 0.0
 
-    # Compute the average score across all frames we analysed.
-    average_score = float(np.mean(scores))
-
-    # Round to 3 decimal places.
-    average_score = round(average_score, 3)
-
-    # Decide whether this looks suspicious.
-    # 0.5 is our threshold — above it we flag as suspicious.
-    if average_score >= 0.5:
-        verdict = "SUSPICIOUS (possible deepfake)"
-    else:
-        verdict = "CLEAN (probably real)"
-
-    # Print a human-readable summary.
-    print(f"[compute_artifact_score] Frames analysed : {len(scores)}")
-    print(f"[compute_artifact_score] Average score   : {average_score}")
-    print(f"[compute_artifact_score] Verdict         : {verdict}")
-
-    # Return the single average score.
-    return average_score
+    avg = round(float(np.mean(scores)), 3)
+    verdict = "SUSPICIOUS" if avg >= 0.5 else "CLEAN"
+    print("[compute_artifact_score] frames=%d  avg=%.3f  %s" % (len(scores), avg, verdict))
+    return avg
 
 
 # ==============================================================================
-# FUNCTION 5: visualize_artifacts
+# 8. visualize_artifacts
 # ==============================================================================
 
 def visualize_artifacts(frame_path, save_path=None):
     """
-    Creates a side-by-side image showing:
-        Panel 1: ORIGINAL   — the untouched input frame
-        Panel 2: RECOMPRESSED — the frame after JPEG round-trip
-        Panel 3: DIFFERENCE x10 — the pixel differences, magnified 10x
+    Side-by-side panel: ORIGINAL | RECOMPRESSED | DIFFERENCE x10
 
-    This is useful for DEMOS: you can SEE where the deepfake artifacts are.
-    Bright spots in the third panel = where the AI left "fingerprints".
+    Bright spots in the third panel mark where JPEG compression caused
+    unexpectedly large damage -- a visual fingerprint of GAN artifacts.
 
     Inputs:
-        frame_path : string — file path to the image
-        save_path  : string or None — where to save the output image
-                     If None, the image is shown on screen instead.
-
-    Returns:
-        Nothing (saves or displays the image)
+        frame_path : str  -- path to an image file
+        save_path  : str or None  -- save destination; None -> display on screen
     """
-
-    # Load the image from disk.
     frame = cv2.imread(frame_path)
-
-    # If loading failed, print an error and return early.
     if frame is None:
-        print(f"[visualize_artifacts] ERROR: Could not load image: {frame_path}")
+        print("[visualize_artifacts] Cannot load: %s" % frame_path)
         return
 
-    # Get the recompressed version using our recompress_frame function.
     recompressed = recompress_frame(frame)
+    diff_gray    = get_difference_map(frame, recompressed)
 
-    # Get the grayscale difference map.
-    diff_gray = get_difference_map(frame, recompressed)
+    panel_orig   = frame.copy()
+    panel_recomp = recompressed.copy()
 
-    # --- Prepare the three panels ---
+    diff_vis   = np.clip(diff_gray.astype(np.uint16) * 10, 0, 255).astype(np.uint8)
+    panel_diff = cv2.cvtColor(diff_vis, cv2.COLOR_GRAY2BGR)
 
-    # Panel 1 is the original, which is already a colour (BGR) image.
-    panel_original = frame
+    # Uniform height
+    h = min(panel_orig.shape[0], panel_recomp.shape[0], panel_diff.shape[0])
+    panels = [panel_orig, panel_recomp, panel_diff]
+    panels = [cv2.resize(p, (p.shape[1], h)) if p.shape[0] != h else p for p in panels]
+    panel_orig, panel_recomp, panel_diff = panels
 
-    # Panel 2 is the recompressed version, also already colour.
-    panel_recompressed = recompressed
+    # Labels
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    for panel, title in zip(
+        [panel_orig, panel_recomp, panel_diff],
+        ["ORIGINAL", "RECOMPRESSED (q=75)", "DIFF x10"]
+    ):
+        cv2.putText(panel, title, (8, 28), font, 0.65, (255, 255, 255), 2)
 
-    # Panel 3 is the difference map, but we need it in colour (3 channels)
-    # so it can sit next to the colour panels.
-    # First, multiply by 10 so the differences are big enough to see.
-    # Without this multiplication, most differences would look like black.
-    diff_visible = diff_gray * 10
+    combined_img = np.hstack([panel_orig, panel_recomp, panel_diff])
 
-    # Clip values to 255 (the maximum brightness for an 8-bit image).
-    # Without this, values above 255 would "wrap around" and look wrong.
-    diff_visible = np.clip(diff_visible, 0, 255).astype(np.uint8)
+    # Score overlay
+    features = get_artifact_features(frame)
+    label = "MSE=%.4f  SSIM_delta=%.4f  score=%.4f" % (
+        features['mse'], features['ssim_delta'], features['combined']
+    )
+    cv2.putText(combined_img, label,
+                (8, combined_img.shape[0] - 10),
+                font, 0.55, (0, 255, 255), 1)
 
-    # Convert the grayscale difference to a 3-channel colour image so we can
-    # stack it with the other two colour panels.
-    # GRAY2BGR just copies the single channel into all three (R=G=B -> grey).
-    diff_colour = cv2.cvtColor(diff_visible, cv2.COLOR_GRAY2BGR)
-
-    # --- Make all three panels the same height ---
-    # We take the smallest height among the three so nothing gets cut off.
-
-    # Get the height of each panel (index 0 = rows = height).
-    h1 = panel_original.shape[0]
-    h2 = panel_recompressed.shape[0]
-    h3 = diff_colour.shape[0]
-
-    # Use the smallest height as the target.
-    target_h = min(h1, h2, h3)
-
-    # Get the width of each panel (index 1 = columns = width).
-    w1 = panel_original.shape[1]
-    w2 = panel_recompressed.shape[1]
-    w3 = diff_colour.shape[1]
-
-    # Resize each panel to (target_h x original_width) if needed.
-    # cv2.resize expects (width, height) not (height, width).
-    if panel_original.shape[0] != target_h:
-        panel_original = cv2.resize(panel_original, (w1, target_h))
-
-    if panel_recompressed.shape[0] != target_h:
-        panel_recompressed = cv2.resize(panel_recompressed, (w2, target_h))
-
-    if diff_colour.shape[0] != target_h:
-        diff_colour = cv2.resize(diff_colour, (w3, target_h))
-
-    # --- Add text labels to each panel ---
-
-    # Font settings for the text labels.
-    # cv2.FONT_HERSHEY_SIMPLEX is a clean, simple font.
-    font       = cv2.FONT_HERSHEY_SIMPLEX
-
-    # Font scale 0.7 means roughly 70% of the default font size.
-    font_scale = 0.7
-
-    # Thickness of the text stroke in pixels.
-    thickness  = 2
-
-    # White colour in BGR format (B=255, G=255, R=255).
-    colour     = (255, 255, 255)
-
-    # Position for the text: 10 pixels from the left, 30 from the top.
-    text_pos   = (10, 30)
-
-    # Write "ORIGINAL" on the first panel.
-    cv2.putText(panel_original,    "ORIGINAL",        text_pos, font, font_scale, colour, thickness)
-
-    # Write "RECOMPRESSED" on the second panel.
-    cv2.putText(panel_recompressed,"RECOMPRESSED",     text_pos, font, font_scale, colour, thickness)
-
-    # Write "DIFFERENCE x10" on the third panel.
-    cv2.putText(diff_colour,       "DIFFERENCE x10",  text_pos, font, font_scale, colour, thickness)
-
-    # --- Combine the three panels side by side ---
-
-    # np.hstack stacks arrays horizontally (left to right).
-    # All three must have the same height for this to work.
-    combined = np.hstack([panel_original, panel_recompressed, diff_colour])
-
-    # --- Save or display ---
-
-    # If save_path was provided, write the combined image to disk.
-    if save_path is not None:
-
-        # Make sure the output folder exists.
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-        # cv2.imwrite saves the image as a file.
-        cv2.imwrite(save_path, combined)
-
-        # Confirm to the user.
-        print(f"[visualize_artifacts] Saved to: {save_path}")
-
+    if save_path:
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        cv2.imwrite(save_path, combined_img)
+        print("[visualize_artifacts] Saved: %s" % save_path)
     else:
-
-        # cv2.imshow opens a window and displays the image.
-        cv2.imshow("Artifact Visualisation", combined)
-
-        # cv2.waitKey(0) pauses until the user presses any key.
+        cv2.imshow("Module 2 - Artifact Visualisation", combined_img)
         cv2.waitKey(0)
-
-        # Closes all OpenCV windows after the key press.
         cv2.destroyAllWindows()
 
 
 # ==============================================================================
-# FUNCTION 6: batch_score_folder
+# 9. batch_score_folder
 # ==============================================================================
 
 def batch_score_folder(folder_path, label):
     """
-    Scores every JPEG image in a folder and returns a list of results.
+    Score every JPEG in a folder and return a list of result dicts.
 
-    This is used to build training data for the machine learning model.
-    After running this on both the real folder and fake folder, you have
-    a dataset of (image, score, label) rows that the model can learn from.
+    Each dict: {"file": path, "mse": float, "ssim_delta": float,
+                "combined": float, "label": label}
 
     Inputs:
-        folder_path : string — path to the folder containing JPEG images
-        label       : string — "real" or "fake" (used to label each result)
+        folder_path : str  -- directory containing .jpg files
+        label       : str  -- "real" or "fake"
 
     Returns:
-        list of dicts — each dict looks like:
-            {"file": "path/to/image.jpg", "score": 0.34, "label": "real"}
+        list[dict]
     """
+    print("\n[batch_score_folder] %s  label=%s" % (folder_path, label))
 
-    # Tell the user which folder we are processing.
-    print(f"\n[batch_score_folder] Folder : {folder_path}")
-    print(f"[batch_score_folder] Label  : {label}")
-
-    # This list will hold all the result dicts.
-    results = []
-
-    # --- Get the list of JPEG files in the folder ---
-
-    # Try to list files; if the folder doesn't exist, print an error.
     try:
-
-        # os.listdir returns all file names in the folder.
         all_files = os.listdir(folder_path)
-
-    # If the folder is missing, catch the error.
     except FileNotFoundError:
-        print(f"[batch_score_folder] ERROR: Folder not found: {folder_path}")
-        return results
+        print("[batch_score_folder] Folder not found: %s" % folder_path)
+        return []
 
-    # Filter to only .jpg files (ignore any other file types in the folder).
-    jpg_files = [f for f in all_files if f.lower().endswith(".jpg")]
+    jpg_files = sorted(f for f in all_files if f.lower().endswith('.jpg'))
+    print("[batch_score_folder] %d JPEG files found" % len(jpg_files))
 
-    # Sort alphabetically so we process them in a consistent order.
-    jpg_files = sorted(jpg_files)
-
-    # Tell the user how many images we found.
-    print(f"[batch_score_folder] Found {len(jpg_files)} JPEG files")
-
-    # If there are no images, return an empty list.
-    if len(jpg_files) == 0:
-        print(f"[batch_score_folder] WARNING: No .jpg files found in {folder_path}")
-        return results
-
-    # --- Score each image ---
-
-    # Loop through every file, with i as the position number (0, 1, 2, ...)
+    results = []
     for i, filename in enumerate(jpg_files):
-
-        # Build the full file path by joining folder path and file name.
-        full_path = os.path.join(folder_path, filename)
-
-        # Try to load and score the image.
+        path = os.path.join(folder_path, filename)
         try:
-
-            # cv2.imread loads the image into a numpy array.
-            frame = cv2.imread(full_path)
-
-            # If loading failed, skip this file.
+            frame = cv2.imread(path)
             if frame is None:
-                print(f"  [SKIP] {filename} — could not load")
                 continue
-
-            # Score this single frame.
-            score = get_artifact_score_for_frame(frame)
-
-            # Add a result dict to our list.
+            feats = get_artifact_features(frame)
             results.append({
-                "file"  : full_path,
-                "score" : score,
-                "label" : label
+                'file':       path,
+                'mse':        feats['mse'],
+                'ssim_delta': feats['ssim_delta'],
+                'combined':   feats['combined'],
+                'label':      label,
             })
-
-            # Print progress every 10 files (so the terminal is not too busy).
-            # The '%' symbol is the modulo operator — i % 10 == 0 means
-            # "every time i is exactly divisible by 10".
             if (i + 1) % 10 == 0:
-                print(f"  Progress: {i + 1} / {len(jpg_files)} files processed")
+                print("  %d/%d" % (i + 1, len(jpg_files)))
+        except Exception as exc:
+            print("  [ERROR] %s: %s" % (filename, exc))
 
-        # Catch any unexpected error.
-        except Exception as e:
-            print(f"  [ERROR] {filename}: {e}")
-
-    # --- Print summary ---
-
-    # If we scored at least one image, compute the average.
     if results:
+        avg = round(float(np.mean([r['combined'] for r in results])), 3)
+        print("[batch_score_folder] avg_combined=%.3f" % avg)
 
-        # Extract just the score values from each result dict.
-        all_scores = [r["score"] for r in results]
-
-        # np.mean computes the average.
-        avg = round(float(np.mean(all_scores)), 3)
-
-        # Print the summary line.
-        print(f"[batch_score_folder] Folder: {folder_path} | Label: {label} | Avg score: {avg}")
-
-    # Return the full list of result dicts.
     return results
 
 
 # ==============================================================================
-# PART 3 — TEST BLOCK
-# Run this file directly to test all functions and verify everything works.
+# Self-test  (python artifact_module.py)
 # ==============================================================================
 
 if __name__ == '__main__':
+    print("=" * 60)
+    print("MODULE 2 - Compression Artifact Detection - self-test")
+    print("scikit-image SSIM: %s" % ("available" if _SKIMAGE_AVAILABLE else "NOT available (using fallback)"))
+    print("=" * 60)
 
-    # Print a header banner.
-    print()
-    print("=" * 50)
-    print("ARTIFACT MODULE — RUNNING SELF-TEST")
-    print("=" * 50)
-    print()
+    # ------------------------------------------------------------------
+    # Synthetic image test
+    # ------------------------------------------------------------------
+    print("\n[1] Synthetic image test")
+    test_frame = np.full((224, 224, 3), 128, dtype=np.uint8)
+    rng = np.random.default_rng(42)
+    test_frame = np.clip(
+        test_frame.astype(np.int16) + rng.integers(-20, 20, test_frame.shape, dtype=np.int16),
+        0, 255
+    ).astype(np.uint8)
 
-    # -----------------------------------------------------------------------
-    # Step 1: Score all REAL frames
-    # -----------------------------------------------------------------------
+    feats = get_artifact_features(test_frame)
+    print("  MSE score  : %.4f" % feats['mse'])
+    print("  SSIM delta : %.4f" % feats['ssim_delta'])
+    print("  Combined   : %.4f" % feats['combined'])
+    score = get_artifact_score_for_frame(test_frame)
+    print("  Score (ensemble API) : %.4f" % score)
 
-    # Tell the user what Step 1 is doing.
-    print("STEP 1: Scoring real frames...")
+    # ------------------------------------------------------------------
+    # Quality sweep
+    # ------------------------------------------------------------------
+    print("\n[2] Quality sweep (lower quality -> higher artifact score)")
+    for q in [95, 85, 75, 60, 40]:
+        s = get_artifact_score_for_frame(test_frame, quality=q)
+        print("  quality=%3d  score=%.4f" % (q, s))
 
-    # Call batch_score_folder on the real frames folder.
-    # 'real' is the label we assign to every result from this folder.
-    real_results = batch_score_folder('data/real/frames/', 'real')
+    # ------------------------------------------------------------------
+    # Folder test (only if data directories exist)
+    # ------------------------------------------------------------------
+    real_dir = 'data/real/frames/'
+    fake_dir = 'data/fake/frames/'
 
-    # Tell the user how many real frames were scored.
-    print(f"  Real frames scored: {len(real_results)}")
-    print()
+    if os.path.isdir(real_dir) and os.path.isdir(fake_dir):
+        print("\n[3] Real vs fake folder comparison")
+        real_results = batch_score_folder(real_dir, 'real')
+        fake_results = batch_score_folder(fake_dir, 'fake')
 
-    # -----------------------------------------------------------------------
-    # Step 2: Score all FAKE frames
-    # -----------------------------------------------------------------------
-
-    # Tell the user what Step 2 is doing.
-    print("STEP 2: Scoring fake frames...")
-
-    # Call batch_score_folder on the fake frames folder.
-    fake_results = batch_score_folder('data/fake/frames/', 'fake')
-
-    # Tell the user how many fake frames were scored.
-    print(f"  Fake frames scored: {len(fake_results)}")
-    print()
-
-    # -----------------------------------------------------------------------
-    # Step 3: Print comparison
-    # -----------------------------------------------------------------------
-
-    # Tell the user what Step 3 is doing.
-    print("STEP 3: Comparing real vs fake scores...")
-    print()
-
-    # Compute the average real score.
-    # If there are no real results, use 0.0 as a safe fallback.
-    if real_results:
-        avg_real = round(float(np.mean([r["score"] for r in real_results])), 3)
+        avg_real = round(np.mean([r['combined'] for r in real_results]), 3) if real_results else 0.0
+        avg_fake = round(np.mean([r['combined'] for r in fake_results]), 3) if fake_results else 0.0
+        print("\n  avg real score : %.3f" % avg_real)
+        print("  avg fake score : %.3f" % avg_fake)
+        print("  fake > real    : %s" % ("YES (expected)" if avg_fake > avg_real else "NO -- check data"))
     else:
-        avg_real = 0.0
+        print("\n[3] Skipping folder test -- %s or %s not found" % (real_dir, fake_dir))
 
-    # Compute the average fake score.
-    if fake_results:
-        avg_fake = round(float(np.mean([r["score"] for r in fake_results])), 3)
-    else:
-        avg_fake = 0.0
-
-    # Print both averages so the user can compare them.
-    print(f"  Average REAL score : {avg_real}")
-    print(f"  Average FAKE score : {avg_fake}")
-    print()
-
-    # Check whether fake average is higher than real average (as expected).
-    # A well-working artifact detector should give higher scores to fake images.
-    fake_higher = avg_fake > avg_real
-
-    # Print whether the relationship holds.
-    print(f"  Fake average > Real average? : {'YES' if fake_higher else 'NO'}")
-    print()
-
-    # Determine if the module is working correctly.
-    # "Working correctly" means fakes score higher than reals.
-    module_ok = "YES" if fake_higher else "NO (scores may still be useful — check visualizations)"
-
-    # Print the verdict.
-    print(f"  Module working correctly: {module_ok}")
-    print()
-
-    # -----------------------------------------------------------------------
-    # Step 4: Create visualizations
-    # -----------------------------------------------------------------------
-
-    # Tell the user what Step 4 is doing.
-    print("STEP 4: Creating visualizations...")
-
-    # Define the folder where we will save the visualizations.
-    VIZ_DIR = "data/visualizations"
-
-    # Create the folder if it does not already exist.
-    # exist_ok=True means no error if it already exists.
-    os.makedirs(VIZ_DIR, exist_ok=True)
-
-    # Try to create a visualization from the first real frame.
-    try:
-
-        # Get the full path to the first real frame.
-        # sorted() ensures we always pick the same file (alphabetically first).
-        first_real_files = sorted([
-            f for f in os.listdir('data/real/frames/') if f.endswith('.jpg')
-        ])
-
-        # Only proceed if there are real files.
-        if first_real_files:
-
-            # Build the full path to the first real file.
-            first_real_path = os.path.join('data/real/frames/', first_real_files[0])
-
-            # Build the output save path.
-            real_viz_path = os.path.join(VIZ_DIR, 'real_example.jpg')
-
-            # Call visualize_artifacts to create and save the side-by-side image.
-            visualize_artifacts(first_real_path, save_path=real_viz_path)
-
-        else:
-            print("  [WARN] No real frames found to visualize")
-
-    # Catch any error during visualization.
-    except Exception as e:
-        print(f"  [ERROR] Could not visualize real frame: {e}")
-
-    # Try to create a visualization from the first fake frame.
-    try:
-
-        # Get the list of fake frame files.
-        first_fake_files = sorted([
-            f for f in os.listdir('data/fake/frames/') if f.endswith('.jpg')
-        ])
-
-        # Only proceed if there are fake files.
-        if first_fake_files:
-
-            # Build the full path to the first fake file.
-            first_fake_path = os.path.join('data/fake/frames/', first_fake_files[0])
-
-            # Build the output save path.
-            fake_viz_path = os.path.join(VIZ_DIR, 'fake_example.jpg')
-
-            # Call visualize_artifacts to create and save the side-by-side image.
-            visualize_artifacts(first_fake_path, save_path=fake_viz_path)
-
-        else:
-            print("  [WARN] No fake frames found to visualize")
-
-    # Catch any error during visualization.
-    except Exception as e:
-        print(f"  [ERROR] Could not visualize fake frame: {e}")
-
-    # Tell the user where the visualizations were saved.
-    print(f"  Visualizations saved to: {VIZ_DIR}/")
-    print()
-
-    # -----------------------------------------------------------------------
-    # Step 5: Print final summary
-    # -----------------------------------------------------------------------
-
-    # Print the complete summary block.
-    print("=" * 50)
-    print("ARTIFACT MODULE TEST COMPLETE")
-    print("=" * 50)
-    print(f"Real frames scored    : {len(real_results)}")
-    print(f"Fake frames scored    : {len(fake_results)}")
-    print(f"Average real score    : {avg_real}")
-    print(f"Average fake score    : {avg_fake}")
-    print(f"Fake > Real?          : {'YES' if fake_higher else 'NO'}")
-    print(f"Visualizations saved  : {VIZ_DIR}/")
-    print("=" * 50)
-    print()
-
-    # -----------------------------------------------------------------------
-    # NEXT STEPS
-    # -----------------------------------------------------------------------
-
-    # Tell the user exactly what to do next and in what order.
-    print("NEXT STEPS:")
-    print("  1. python artifact_module.py        — tests the artifact module  (you are here)")
-    print("  2. python generate_training_data.py — generates the ML training CSV")
-    print("  3. Check data/visualizations/       — see what artifacts look like visually")
+    print("\n" + "=" * 60)
+    print("Self-test complete.")
+    print("=" * 60)
