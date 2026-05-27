@@ -17,7 +17,7 @@ class FrameResult(BaseModel):
 
     frame_index: int = Field(..., description="0-based index within sampled frames")
     timestamp_sec: float = Field(..., description="Position in the video (seconds)")
-    prob_fake: float = Field(..., description="Ensemble fake probability [0, 1]")
+    prob_fake: float = Field(..., description="Blended ensemble fake probability [0, 1]")
     ear_score: float = Field(0.5, description="MRL blink-rate score [0,1] (video-level; 0.5 if MRL unavailable)")
     artifact_score: float = Field(..., description="JPEG recompression artifact score [0, 1]")
     fft_score: float = Field(..., description="FFT spectral slope anomaly score [0, 1]")
@@ -25,6 +25,12 @@ class FrameResult(BaseModel):
     face_detected: bool = Field(..., description="Whether a face was detected in this frame")
     face_crop_b64: Optional[str] = Field(
         None, description="Base64-encoded JPEG of the face crop, or null if no face"
+    )
+    lr_prob: Optional[float] = Field(
+        None, description="LR ensemble P(fake) before CNN blend [0, 1]"
+    )
+    cnn_prob: Optional[float] = Field(
+        None, description="CNN EfficientNet-B0 P(fake) [0, 1], or null if CNN not active"
     )
 
 
@@ -63,7 +69,7 @@ class AnalysisResponse(BaseModel):
         ...,
         description='"ensemble_learned" if data/ensemble_model.pkl was loaded, else "equal_weights"',
     )
-    cnn_active: bool = Field(False, description="Always false — CNN path not in scope")
+    cnn_active: bool = Field(False, description="True when EfficientNet-B0 contributed to the verdict")
 
     # ── Registry provenance (new in v2) ──────────────────────────────────────
     model_id: str = Field(

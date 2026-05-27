@@ -66,6 +66,18 @@ except ImportError as _mrl_err:
         _mrl_err,
     )
 
+# ---------------------------------------------------------------------------
+# CNN inference (EfficientNet-B0) — soft dependency
+# ---------------------------------------------------------------------------
+_CNN_PREDICT_FN = None
+
+try:
+    from src.cnn_runner import cnn_predict as _cnn_predict_imported  # noqa: E402
+    _CNN_PREDICT_FN = _cnn_predict_imported
+    logger.info("CNN inference module (cnn_runner.cnn_predict) loaded.")
+except ImportError as _cnn_err:
+    logger.info("CNN inference module not importable (%s) — CNN disabled.", _cnn_err)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -166,15 +178,21 @@ def _score_face(
     scaler: Any,
     frame_idx: int,
     ear_score: float = 0.5,
-) -> tuple[float, float, float, float, float]:
+    cnn_model: Any = None,
+    cnn_alpha: float = 0.65,
+) -> tuple[float, float, float, float, float, float, Optional[float]]:
     """
-    Run all four feature scorers on a single face crop.
+    Run all feature scorers on a single face crop and return blended probabilities.
 
     ear_score is computed once per video and passed in (not re-computed
     per frame) because blink detection requires the full frame sequence.
 
-    Returns (prob_fake, ear_score, artifact, fft, laplacian).
-    Any scorer that raises is logged and replaced with a neutral fallback.
+    CNN prediction is blended with LR prediction when a CNN model is provided:
+        prob_fake = cnn_alpha * cnn_prob + (1 - cnn_alpha) * lr_prob
+
+    Returns:
+        (prob_fake, ear_score, artifact, fft, laplacian, lr_prob, cnn_prob)
+        cnn_prob is None if no CNN model is provided or inference fails.
     """
     try:
         artifact = float(get_artifact_score_for_frame(face))
@@ -194,17 +212,32 @@ def _score_face(
         logger.warning("Frame %d Laplacian scorer error: %s", frame_idx, exc)
         lap = 0.0
 
+    # LR probability
     if model is not None and scaler is not None:
         try:
-            # arg order: (model, scaler, artifact, fft, laplacian, ear_score)
-            prob_fake = ensemble_score_learned(model, scaler, artifact, fft, lap, ear_score)
+            lr_prob = ensemble_score_learned(model, scaler, artifact, fft, lap, ear_score)
         except Exception as exc:
             logger.warning("Frame %d ensemble_score_learned error: %s", frame_idx, exc)
-            prob_fake = ensemble_score_equal_weights(artifact, fft, lap)
+            lr_prob = ensemble_score_equal_weights(artifact, fft, lap)
     else:
-        prob_fake = ensemble_score_equal_weights(artifact, fft, lap)
+        lr_prob = ensemble_score_equal_weights(artifact, fft, lap)
 
-    return prob_fake, ear_score, artifact, fft, lap
+    # CNN probability (optional)
+    cnn_prob: Optional[float] = None
+    if cnn_model is not None and _CNN_PREDICT_FN is not None:
+        try:
+            cnn_prob = _CNN_PREDICT_FN(cnn_model, face)
+        except Exception as exc:
+            logger.warning("Frame %d CNN inference error: %s", frame_idx, exc)
+            cnn_prob = None
+
+    # Blend
+    if cnn_prob is not None:
+        prob_fake = float(cnn_alpha * cnn_prob + (1.0 - cnn_alpha) * lr_prob)
+    else:
+        prob_fake = lr_prob
+
+    return prob_fake, ear_score, artifact, fft, lap, lr_prob, cnn_prob
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +254,8 @@ def analyze_video(
     mrl_img_size: int = 84,
     mrl_idx_to_label: dict | None = None,
     mrl_device: Any = None,
+    cnn_model: Any = None,
+    cnn_alpha: float = 0.65,
 ) -> dict:
     """
     Analyze a video file for deepfake signals.
@@ -233,6 +268,9 @@ def analyze_video(
     a single video-level ear_score, then that score is passed into the LR
     ensemble for every frame. If the MRL model is unavailable, ear_score = 0.5.
 
+    CNN (EfficientNet-B0) is run per frame if cnn_model is provided, blended
+    with the LR score using cnn_alpha: prob = alpha*CNN + (1-alpha)*LR.
+
     Args:
         video_path       : Absolute path to a video file (temp file on disk).
         model            : Trained sklearn model (or None for equal-weights).
@@ -244,9 +282,12 @@ def analyze_video(
         mrl_img_size     : Eye crop size expected by the MRL model (default 84).
         mrl_idx_to_label : {0: "sleepy", 1: "awake"} from load_model().
         mrl_device       : torch device for MRL inference.
+        cnn_model        : Loaded EfficientNet-B0 or None (CNN disabled).
+        cnn_alpha        : Blend weight for CNN (default 0.65 = 65% CNN, 35% LR).
 
     Returns:
-        A dict matching AnalysisResponse (models.py).
+        A dict matching AnalysisResponse (models.py) plus extra fields used by
+        the /predict endpoint (lr_prob, cnn_prob per frame; module_scores).
 
     Raises:
         ValueError: If no faces were detected in any sampled frame.
@@ -321,6 +362,7 @@ def analyze_video(
                 "prob_fake": 0.5, "ear_score": 0.5,
                 "artifact_score": 0.0, "fft_score": 0.0, "laplacian_score": 0.0,
                 "face_detected": False, "face_crop_b64": None,
+                "lr_prob": None, "cnn_prob": None,
             })
             continue
 
@@ -332,21 +374,28 @@ def analyze_video(
                 "prob_fake": 0.5, "ear_score": 0.5,
                 "artifact_score": 0.0, "fft_score": 0.0, "laplacian_score": 0.0,
                 "face_detected": False, "face_crop_b64": None,
+                "lr_prob": None, "cnn_prob": None,
             })
             continue
 
-        prob_fake, ear, artifact, fft, lap = _score_face(
-            face, model, scaler, idx, ear_score=ear_score_video
+        prob_fake, ear, artifact, fft, lap, lr_prob, cnn_prob = _score_face(
+            face, model, scaler, idx,
+            ear_score=ear_score_video,
+            cnn_model=cnn_model,
+            cnn_alpha=cnn_alpha,
         )
         face_b64 = _encode_face_b64(face)
 
         frame_results.append({
             "frame_index": idx, "timestamp_sec": timestamp,
-            "prob_fake": prob_fake, "ear_score": round(ear, 4),
+            "prob_fake": round(prob_fake, 4),
+            "ear_score": round(ear, 4),
             "artifact_score": round(artifact, 4),
             "fft_score": round(fft, 4),
             "laplacian_score": round(lap, 4),
             "face_detected": True, "face_crop_b64": face_b64,
+            "lr_prob": round(lr_prob, 4),
+            "cnn_prob": round(cnn_prob, 4) if cnn_prob is not None else None,
         })
 
     # Guard: at least one face must have been detected ────────────────────────
@@ -365,6 +414,8 @@ def analyze_video(
     # Aggregates ─────────────────────────────────────────────────────────────
     prob_fakes = [f["prob_fake"] for f in detected_frames]
     lap_scores = [f["laplacian_score"] for f in detected_frames]
+    lr_probs   = [f["lr_prob"] for f in detected_frames if f["lr_prob"] is not None]
+    cnn_probs  = [f["cnn_prob"] for f in detected_frames if f["cnn_prob"] is not None]
 
     prob_fake_mean = round(float(np.mean(prob_fakes)), 4)
 
@@ -388,15 +439,27 @@ def analyze_video(
     else:
         verdict = "UNCERTAIN"
 
+    cnn_active = cnn_model is not None and len(cnn_probs) > 0
+
     model_used = (
         "ensemble_learned" if (model is not None and scaler is not None)
         else "equal_weights"
     )
+    if cnn_active:
+        model_used = "cnn_lr_stacked"
 
     # Registry metadata (passed in from main.py via app_state) ───────────────
     model_id   = app_state.get("active_model_id",   "unknown")
     model_type = app_state.get("active_model_type", model_used)
     model_f1   = app_state.get("active_model_f1",   None)
+
+    # Module-level aggregate scores (for /predict endpoint) ──────────────────
+    module_scores = {
+        "cnn":      round(float(np.mean(cnn_probs)), 4) if cnn_probs else None,
+        "lr":       round(float(np.mean(lr_probs)),  4) if lr_probs  else None,
+        "temporal": temporal_score,
+        "rppg":     None,
+    }
 
     return {
         "video_name": os.path.basename(video_path),
@@ -411,11 +474,13 @@ def analyze_video(
         "model_id":   model_id,
         "model_type": model_type,
         "model_f1":   model_f1,
-        "cnn_active": False,
+        "cnn_active": cnn_active,
         "frames_analyzed": len(detected_frames),
         "frames_sampled": n_frames,
         "fps": round(fps, 2),
         "duration_sec": round(duration_sec, 2),
         "frames": frame_results,
         "warnings": warnings_list,
+        # Extra fields consumed by /predict (not part of AnalysisResponse):
+        "module_scores": module_scores,
     }

@@ -1134,7 +1134,7 @@ if __name__ == "__main__":
         })
         winner = registry.select_best(metric="f1")
         print(f"  Registered: {_model_id}")
-        print(f"  Active model → {winner['model_id']}  (F1 = {winner['metrics']['f1']:.4f})")
+        print(f"  Active model -> {winner['model_id']}  (F1 = {winner['metrics']['f1']:.4f})")
     except Exception as _reg_exc:
         print(f"  [WARN] Registry update failed: {_reg_exc}")
         print("         Training is still complete — registry is optional.")
