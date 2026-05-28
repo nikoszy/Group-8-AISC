@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: group8-deepfake-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: CORS_ORIGINS
+        sync: false
+      - key: HANDCRAFTED_VALIDATION_AUC
+        value: "1.0"
+      - key: FORCE_CNN_FALLBACK
+        value: "0"

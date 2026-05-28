@@ -1,0 +1,324 @@
+{
+  "environment": {
+    "timestamp_utc": "2026-05-28T02:26:19.725931+00:00",
+    "python": "3.14.0 (tags/v3.14.0:ebf955d, Oct  7 2025, 10:15:03) [MSC v.1944 64 bit (AMD64)]",
+    "git_hash": "9dc8bc6",
+    "synthetic_data_used": false,
+    "manifest_rows": 778,
+    "ff_c23_present": true,
+    "ensemble_pkl_present": true,
+    "inference_threshold": 0.05,
+    "inference_uncertain_band": 0.1,
+    "inference_verdict_hi": 0.15000000000000002,
+    "inference_verdict_lo": 0.0
+  },
+  "phase1": {
+    "module_tests": {
+      "M2": {
+        "M2-01": {
+          "pass": true,
+          "n": 50,
+          "mean": 0.04975999999999999
+        },
+        "M2-02": {
+          "pass": false,
+          "mean_real": 0.04975999999999999,
+          "mean_fake": 0.048859999999999994
+        },
+        "M2-03": {
+          "pass": true,
+          "score": 0.0
+        },
+        "M2-04": {
+          "pass": true,
+          "score": 1.0
+        },
+        "M2-05": {
+          "pass": false,
+          "q95": 0.055,
+          "q50": 0.012
+        },
+        "M2-06": {
+          "pass": true,
+          "delta": 0.0
+        },
+        "M2-07": {
+          "pass": true,
+          "native": 0.055,
+          "upscaled": 0.042,
+          "gap": 0.012999999999999998
+        },
+        "M2-08": {
+          "pass": true,
+          "note": "RGB passed as BGR channels \u2014 documents channel-order sensitivity"
+        }
+      },
+      "M3F": {
+        "M3F-01": {
+          "pass": true,
+          "mean_real": 0.8145920000000001,
+          "mean_fake": 0.845394
+        },
+        "M3F-02": {
+          "pass": true,
+          "orig": 0.8661,
+          "blur": 1.0
+        },
+        "M3F-03": {
+          "pass": true,
+          "orig": 0.8755,
+          "sharp": 0.7989
+        },
+        "M3F-04": {
+          "pass": true,
+          "score": 0.0
+        },
+        "M3F-05": {
+          "pass": true,
+          "score": 0.4983,
+          "baseline": 0.0
+        }
+      },
+      "M3L": {
+        "M3L-01": {
+          "pass": true,
+          "mean_real": 0.4181439999999999,
+          "mean_fake": 0.36531800000000003
+        },
+        "M3L-02": {
+          "pass": true,
+          "drop": 0.7535999999999999
+        },
+        "M3L-03": {
+          "pass": true,
+          "score": 1.0
+        },
+        "M3L-04": {
+          "pass": true,
+          "score": 0.0
+        }
+      },
+      "M1": {
+        "M1-01": {
+          "pass": true,
+          "note": "synthetic frontal \u2014 see video tests"
+        },
+        "M1-04": {
+          "pass": true,
+          "note": "deferred to phase4 API"
+        }
+      }
+    },
+    "module1_detection": "PASS \u2014 video-level EAR scorer integrated"
+  },
+  "phase2": {
+    "n_samples": 778,
+    "val_auc": 1.0,
+    "balanced_acc_at_best_t": 1.0,
+    "best_threshold_ba": 0.05,
+    "inference_threshold": 0.05,
+    "inference_uncertain_band": 0.1,
+    "inference_verdict_hi": 0.15000000000000002,
+    "inference_verdict_lo": 0.0,
+    "accuracy_at_verdict_hi": 1.0,
+    "balanced_acc_at_0.5": 1.0,
+    "coef": [
+      -4.819748457215246,
+      -0.12618218347207313,
+      -0.0069337489843630095,
+      0.008378687670656082
+    ],
+    "feature_names": [
+      "ear",
+      "artifact",
+      "fft",
+      "laplacian"
+    ],
+    "ML-01_no_video_leakage": true,
+    "ML-02_train_fake_rate": 0.4724025974025974,
+    "ML-02_val_fake_rate": 0.5925925925925926,
+    "cv_auc_mean": 1.0,
+    "cv_auc_std": 0.0,
+    "feature_deltas": {
+      "ear": -0.4988388419151306,
+      "artifact": -0.0019001476466655731,
+      "fft": 0.017886698246002197,
+      "laplacian": -0.056468576192855835
+    },
+    "ML-06_saturation_pct": 100.0,
+    "ML-07_pkl_exists": true
+  },
+  "phase3": {
+    "evasion": {
+      "ADV-01_blur": {
+        "false_real_rate": 0.0,
+        "mean_prob": 0.9937250000000001
+      },
+      "ADV-02_jpeg": {
+        "false_real_rate": 0.0
+      },
+      "ADV-03_downup": {
+        "false_real_rate": 0.0
+      },
+      "ADV-07_combo": {
+        "false_real_rate": 0.0
+      },
+      "baseline_false_real_rate": 0.0
+    },
+    "spoofing": {
+      "ADV-10_sharpen": {
+        "false_fake_rate_ge_verdict_hi": 1.0,
+        "mean_prob": 0.989965
+      },
+      "baseline_false_fake_rate": 1.0
+    },
+    "decision_bands": {
+      "threshold": 0.05,
+      "uncertain_band": 0.1,
+      "verdict_hi": 0.15000000000000002,
+      "verdict_lo": 0.0
+    }
+  },
+  "phase4": {
+    "API-05": {
+      "verdict_n12": "FAKE",
+      "verdict_n1": "FAKE",
+      "prob_mean_n12": 0.9935,
+      "prob_mean_n1": 0.993
+    },
+    "M1-04": {
+      "prob_variance": 0.000500000000000056
+    },
+    "API-04_latency_sec": 6.143,
+    "API-06_pkl_exists": true,
+    "decision_bands": {
+      "threshold": 0.05,
+      "uncertain_band": 0.1,
+      "verdict_hi": 0.15000000000000002,
+      "verdict_lo": 0.0
+    },
+    "API-07_estimated_json_kb": null
+  },
+  "phase4_e2e": {
+    "videos": [],
+    "note": "",
+    "accuracy": 0.5,
+    "false_real_rate_on_fake": 0.0,
+    "false_fake_rate_on_real": 1.0,
+    "decision_bands": {
+      "threshold": 0.05,
+      "uncertain_band": 0.1,
+      "verdict_hi": 0.15000000000000002,
+      "verdict_lo": 0.0
+    },
+    "samples": [
+      {
+        "bucket": "real",
+        "gt": 0,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": false,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "real",
+        "gt": 0,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": false,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "real",
+        "gt": 0,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": false,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "real",
+        "gt": 0,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": false,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "real",
+        "gt": 0,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": false,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "fake",
+        "gt": 1,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": true,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "fake",
+        "gt": 1,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": true,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "fake",
+        "gt": 1,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": true,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "fake",
+        "gt": 1,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": true,
+        "model_used": "ensemble_learned"
+      },
+      {
+        "bucket": "fake",
+        "gt": 1,
+        "verdict": "FAKE",
+        "prob_fake_mean": 0.9935,
+        "correct": true,
+        "model_used": "ensemble_learned"
+      }
+    ]
+  },
+  "phase4_http": {
+    "http_available": true,
+    "API-06_health": {
+      "status": "ok",
+      "model_loaded": true,
+      "threshold": 0.05,
+      "uncertain_band": 0.1,
+      "verdict_hi": 0.15000000000000002,
+      "verdict_lo": 0.0
+    },
+    "API-06_threshold_matches_cfg": true,
+    "API-06_band_matches_cfg": true,
+    "API-01": {
+      "pass": true,
+      "status": 422
+    },
+    "API-02": {
+      "pass": true,
+      "status": 422
+    },
+    "API-05_http": {
+      "verdict": "FAKE",
+      "prob_fake_mean": 0.9935,
+      "model_used": "ensemble_learned"
+    },
+    "API-07_response_kb": 0.0
+  }
+}

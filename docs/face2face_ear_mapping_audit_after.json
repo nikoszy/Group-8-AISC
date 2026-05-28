@@ -1,0 +1,64 @@
+{
+  "manifest_path": "data\\experiments\\face2face\\manifest.csv",
+  "rows_total": 778,
+  "rows_unresolved": 0,
+  "rows_unresolved_rate": 0.0,
+  "unique_video_ids_total": 167,
+  "unique_video_ids_unresolved": 0,
+  "unique_video_ids_unresolved_rate": 0.0,
+  "by_class": {
+    "fake": {
+      "rows_total": 387,
+      "rows_unresolved": 0,
+      "unique_video_ids_total": 83,
+      "unique_video_ids_unresolved": 0,
+      "rows_unresolved_rate": 0.0,
+      "unique_video_ids_unresolved_rate": 0.0
+    },
+    "real": {
+      "rows_total": 391,
+      "rows_unresolved": 0,
+      "unique_video_ids_total": 84,
+      "unique_video_ids_unresolved": 0,
+      "rows_unresolved_rate": 0.0,
+      "unique_video_ids_unresolved_rate": 0.0
+    }
+  },
+  "by_source_dataset": {
+    "archive/FaceForensics/Face2Face": {
+      "rows_total": 387,
+      "rows_unresolved": 0,
+      "unique_video_ids_total": 83,
+      "unique_video_ids_unresolved": 0,
+      "rows_unresolved_rate": 0.0,
+      "unique_video_ids_unresolved_rate": 0.0
+    },
+    "archive/FaceForensics/original": {
+      "rows_total": 391,
+      "rows_unresolved": 0,
+      "unique_video_ids_total": 84,
+      "unique_video_ids_unresolved": 0,
+      "rows_unresolved_rate": 0.0,
+      "unique_video_ids_unresolved_rate": 0.0
+    }
+  },
+  "by_class_and_source_dataset": {
+    "fake | archive/FaceForensics/Face2Face": {
+      "rows_total": 387,
+      "rows_unresolved": 0,
+      "unique_video_ids_total": 83,
+      "unique_video_ids_unresolved": 0,
+      "rows_unresolved_rate": 0.0,
+      "unique_video_ids_unresolved_rate": 0.0
+    },
+    "real | archive/FaceForensics/original": {
+      "rows_total": 391,
+      "rows_unresolved": 0,
+      "unique_video_ids_total": 84,
+      "unique_video_ids_unresolved": 0,
+      "rows_unresolved_rate": 0.0,
+      "unique_video_ids_unresolved_rate": 0.0
+    }
+  },
+  "unresolved_examples": []
+}

@@ -1,0 +1,138 @@
+{
+  "meta": {
+    "features_csv": "data\\module3_features.csv",
+    "ffr_cap": 0.05,
+    "min_recall_fake": 0.95,
+    "threshold_grid": {
+      "min_threshold": 0.01,
+      "max_threshold": 0.99,
+      "n_steps": 197
+    },
+    "val_auc": 1.0,
+    "n_val": 162
+  },
+  "candidates": [
+    {
+      "threshold": 0.015,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    },
+    {
+      "threshold": 0.99,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    },
+    {
+      "threshold": 0.05,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    },
+    {
+      "threshold": 0.15000000000000002,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    },
+    {
+      "threshold": 0.5,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    },
+    {
+      "threshold": 0.9,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    }
+  ],
+  "named_candidates": {
+    "constrained_best": {
+      "threshold": 0.015,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    },
+    "lowest_false_fake": {
+      "threshold": 0.99,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    },
+    "max_recall_fake": {
+      "threshold": 0.015,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    },
+    "best_balanced_accuracy": {
+      "threshold": 0.015,
+      "accuracy": 1.0,
+      "balanced_accuracy": 1.0,
+      "precision_fake": 1.0,
+      "recall_fake": 1.0,
+      "false_fake_on_real": 0.0,
+      "false_real_on_fake": 0.0,
+      "support_real": 66,
+      "support_fake": 96,
+      "feasible": true
+    }
+  }
+}
